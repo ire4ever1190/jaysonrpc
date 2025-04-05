@@ -52,13 +52,14 @@ type
     ## Response sent back to the caller.
     ## Is possible that it contains an error
     jsonrpc = "2.0"
-    id: Option[JsonNode]
-    case passed: bool ## Whether the call failed or not
+    id*: JsonNode
+      ## A response always has an ID since notifications have nothing sent back
+    case passed*: bool ## Whether the call failed or not
     of true:
-      result: JsonNode
+      result*: JsonNode
         ## Result from the call
     of false:
-      error: Error
+      error*: Error
         ## Error that occured from the call
 
   RPCErrorCode = distinct int
@@ -67,7 +68,7 @@ type
 
   RPCError = object of CatchableError
     ## Exception to throw about an error
-    code: RPCErrorCode
+    code*: RPCErrorCode
 
 const
   InvalidRequest = RPCErrorCode(-32600)
@@ -77,9 +78,12 @@ func fromJsonHook*(request: out Request, data: JsonNode) =
   ## Hook for parsing the JSON
   # Perform some validation
   let id = option(data{"id"})
-  if id.map(x => x.kind notin {JInt, JString, JNull}).get(true):
+  if id.map(x => x.kind notin {JInt, JString, JNull}).get(false):
     raise (ref RPCError)(code: InvalidRequest, msg: "`id` must be one int, string, or null")
-  if data["params"].kind notin {JArray, JObject}
+
+  # "This member MAY be omitted"
+  let params = option(data{"params"})
+  if params.map(x => x.kind notin {JArray, JObject}).get(false):
     raise (ref RPCError)(code: InvalidRequest, msg: "Params must be an array/object of arguments")
 
   request = Request(
@@ -89,15 +93,31 @@ func fromJsonHook*(request: out Request, data: JsonNode) =
       params: data["params"]
   )
 
+func toJsonHook*(request: sink Request): JsonNode =
+  result = %request
+  result["method"] = result["meth"]
+  result.delete("meth")
+
+func fromJsonHook*(response: out Response, data: JsonNode) =
+  response = Response(id: data["id"], passed: "result" in data)
+  if response.passed:
+    response.result = data["result"]
+  else:
+    response.error.fromJson(data["error"])
+
+
+
 func isNotification*(x: Request): bool =
   ## Checks if a request is a notification
   x.id.isNone()
+
 
 func failed(req: Request, code: RPCErrorCode, msg: string, data: JsonNode = newJNull()): Response =
   ## Constructs an error in response to a request.
   ## Expects the request to not be a notification
   return Response(
-    id: req.id,
+    # "If there was an error in detecting the id in the Request object (e.g. Parse error/Invalid Request), it MUST be Null."
+    id: req.id.get(newJNull()),
     passed: false,
     error: Error(
       code: code,
@@ -106,6 +126,14 @@ func failed(req: Request, code: RPCErrorCode, msg: string, data: JsonNode = newJ
     )
   )
 
+func passed[T](req: Request, result: sink T) =
+  ## Constructs a response in response to a successful request
+  return Response(
+    # "If there was an error in detecting the id in the Request object (e.g. Parse error/Invalid Request), it MUST be Null."
+    id: req.id.get(newJNull()),
+    passed: true,
+    result: result.toJson()
+  )
 
 proc createNamedTuple(prc: NimNode): NimNode =
   ## Takes in the NimNode for a proc type and returns a named tuple to
@@ -185,11 +213,11 @@ macro wrapRPC(handler: proc, into: typedesc): proc =
       data.parseArgs(args)
       return `handler`.call(args).toJson()
 
-proc add*[R](exec: var Executor[R], meth: string, handler: proc) =
+proc on*[R](exec: var Executor[R], meth: string, handler: proc) =
   ## Adds a method into the executor. Overwrites a method if it already exists
   exec.handlers[meth] = wrapRPC(handler, R)
 
-proc add*[T](exec: var Executor, def: MethodDef[T], handler: T) =
+proc on*[T](exec: var Executor, def: MethodDef[T], handler: T) =
   ## Adds a method into the executor. Enforces the method implements a
   ## a signature
   exec.add(def.name, handler)
@@ -201,7 +229,15 @@ proc call*[R](exec: var Executor[R], request: Request): R =
     raise (ref KeyError)(msg: fmt"{meth} not registered in executor") # TODO: Convert to RPC error
   exec.handlers[request.meth](request.params)
 
+proc call*[R](exec: var Executor[R], requests: openArray[Request]): seq[R] =
+  ## Runs a batch series of calls
+  result = newSeqOfCap[R](requests.len)
+  for request in requests:
+    result &= exec.call(request)
+
+
 proc call*[R](exec: var Executor[R], request: JsonNode): R =
-  ## Handle a request that is still in JSON
+  ## Handle a request that is still in JSON. Can be either a batch call or
+  return exec.call(request.jsonTo(Request))
 
 export critbits
