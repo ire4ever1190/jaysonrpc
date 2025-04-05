@@ -73,6 +73,7 @@ type
 const
   InvalidRequest = RPCErrorCode(-32600)
   InvalidParams = RPCErrorCode(-32602)
+  MethodNotFound = RPCErrorCode(-32601)
 
 func fromJsonHook*(request: out Request, data: JsonNode) =
   ## Hook for parsing the JSON
@@ -118,6 +119,19 @@ func failed(req: Request, code: RPCErrorCode, msg: string, data: JsonNode = newJ
   return Response(
     # "If there was an error in detecting the id in the Request object (e.g. Parse error/Invalid Request), it MUST be Null."
     id: req.id.get(newJNull()),
+    passed: false,
+    error: Error(
+      code: code,
+      message: msg,
+      data: data
+    )
+  )
+
+func failed(code: RPCErrorCode, msg: string, data: JsonNode = newJNull()): Response =
+  ## Constructs an error. Use this when a valid request is not available
+  return Response(
+    # "If there was an error in detecting the id in the Request object (e.g. Parse error/Invalid Request), it MUST be Null."
+    id: newJNull(),
     passed: false,
     error: Error(
       code: code,
@@ -226,18 +240,27 @@ proc call*[R](exec: var Executor[R], request: Request): R =
   ## Handles a method
   let meth = request.meth
   if meth notin exec.handlers:
-    raise (ref KeyError)(msg: fmt"{meth} not registered in executor") # TODO: Convert to RPC error
+    return request.failed(MethodNotFound, fmt"{meth} not registered in executor")
   exec.handlers[request.meth](request.params)
 
 proc call*[R](exec: var Executor[R], requests: openArray[Request]): seq[R] =
   ## Runs a batch series of calls
+  if requests.len == 0:
+    return failed(InvalidRequest, "Batch calls must have at least 1 call")
   result = newSeqOfCap[R](requests.len)
   for request in requests:
     result &= exec.call(request)
 
 
 proc call*[R](exec: var Executor[R], request: JsonNode): R =
-  ## Handle a request that is still in JSON. Can be either a batch call or
-  return exec.call(request.jsonTo(Request))
+  ## Handle a request that is still in JSON.
+  ## Handles both batch calls and single calls
+  case request.kind
+  of JArray:
+    exec.call(request.jsonTo(seq[Request]))
+  of JObject:
+    exec.call(request.jsonTo(seq[Request]))
+  else:
+    return failed(InvalidRequest, "Request must be a single call or an array of batch calls")
 
 export critbits
