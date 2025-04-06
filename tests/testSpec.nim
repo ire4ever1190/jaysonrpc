@@ -27,25 +27,25 @@ macro generateTestCases() =
     (
       "RPC Call with positional parameters 1",
       %* {"jsonrpc": "2.0", "method": "subtract", "params": [42, 23], "id": 1},
-      %* {"jsonrpc": "2.0", "result": 19, "id": 1}
+      %* {"id": 1, "jsonrpc": "2.0", "result": 19}
     ),
     (
       "RPC Call with positional parameters 2",
       %* {"jsonrpc": "2.0", "method": "subtract", "params": [23, 42], "id": 2},
-      %* {"jsonrpc": "2.0", "result": -19, "id": 2}
+      %* {"id": 2, "jsonrpc": "2.0", "result": -19}
     ),
     (
       "RPC Call with named parameters 1",
       %* {"jsonrpc": "2.0", "method": "subtract", "params": {"subtrahend": 23, "minuend": 42}, "id": 3},
-      %* {"jsonrpc": "2.0", "result": 19, "id": 3}
+      %* {"id": 3, "jsonrpc": "2.0", "result": 19}
     ),
     (
       "RPC call with named parameters 2",
       %* {"jsonrpc": "2.0", "method": "subtract", "params": {"minuend": 42, "subtrahend": 23}, "id": 4},
-      %* {"jsonrpc": "2.0", "result": 19, "id": 4}
+      %* {"id": 4, "jsonrpc": "2.0", "result": 19}
     ),
     (
-      "Notification 1",
+      "Notification 1", # TODO: Add check that the notification does get ran
       %* {"jsonrpc": "2.0", "method": "update", "params": [1,2,3,4,5]},
       nil # Notifications don't send anything back
     ),
