@@ -1,4 +1,4 @@
-## Test cases taken from the "Examples" section in the spec.
+## Test cases taken from the "Examples" section in the spec. Error messages are changed to match what we have (codes stay the same)
 ## Only missing invalid JSON requests since we deal with parsed JSON so that is a transport layer problem
 ## https://www.jsonrpc.org/specification#examples
 
@@ -52,12 +52,12 @@ macro generateTestCases() =
     (
       "Notification 2",
       %* {"jsonrpc": "2.0", "method": "foobar"},
-      nil
+      nil # Is an error, but notifications send nothing back
     ),
     (
       "RPC call of non-existent method",
       %* {"jsonrpc": "2.0", "method": "foobar", "id": "1"},
-      %* {"jsonrpc": "2.0", "error": {"code": -32601, "message": "Method not found"}, "id": "1"}
+      %* {"id": "1", "jsonrpc": "2.0", "error": {"code": -32601, "message": "Method not found: 'foobar'"}}
     ),
     # We take in pre-parsed JSON, so can't actually get invalid JSON.
     # Transports must handle this error
@@ -65,14 +65,14 @@ macro generateTestCases() =
     (
       "RPC call with invalid request object",
       %* {"jsonrpc": "2.0", "method": 1, "params": "bar"},
-      %* {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": nil}
+      %* {"id": nil, "jsonrpc": "2.0", "error": {"code": -32600, "message": "Params must be an array/object of arguments"}}
     ),
     # Same for batch calls, we deal with pre-parsed JSON
     # "RPCC call Batch, invalid JSON"
     (
       "RPC call with an empty array",
       %* [],
-      %* {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": nil}
+      %* {"id": nil, "jsonrpc": "2.0", "error": {"code": -32600, "message": "Batch calls must have at least 1 call"}}
     ),
     (
       "RPC call with invalid batch (but not empty)",

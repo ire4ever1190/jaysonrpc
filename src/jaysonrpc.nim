@@ -69,29 +69,37 @@ type
   RPCError = object of CatchableError
     ## Exception to throw about an error
     code*: RPCErrorCode
+      ## Corresponding error code defined in the spec
+    id*: JsonNode
+      ## Request that the failure occured in.
+      ## "If there was an error in detecting the id in the Request object (e.g. Parse error/Invalid Request), it MUST be Null."
 
 const
   InvalidRequest = RPCErrorCode(-32600)
   InvalidParams = RPCErrorCode(-32602)
   MethodNotFound = RPCErrorCode(-32601)
 
+proc `%`*(code: RPCErrorCode): JsonNode {.borrow.}
+proc `$`*(code: RPCErrorCode): string {.borrow.}
+
+
 func fromJsonHook*(request: out Request, data: JsonNode) =
   ## Hook for parsing the JSON
   # Perform some validation
   let id = option(data{"id"})
   if id.map(x => x.kind notin {JInt, JString, JNull}).get(false):
-    raise (ref RPCError)(code: InvalidRequest, msg: "`id` must be one int, string, or null")
+    raise (ref RPCError)(id: newJNull(), code: InvalidRequest, msg: "`id` must be one int, string, or null")
 
   # "This member MAY be omitted"
   let params = option(data{"params"})
   if params.map(x => x.kind notin {JArray, JObject}).get(false):
-    raise (ref RPCError)(code: InvalidRequest, msg: "Params must be an array/object of arguments")
+    raise (ref RPCError)(id: id.get(newJNull()), code: InvalidRequest, msg: "Params must be an array/object of arguments")
 
   request = Request(
       jsonrpc: data["jsonrpc"].str,
       id: id,
       meth: data["method"].str,
-      params: data["params"]
+      params: params.get(newJArray())
   )
 
 func toJsonHook*(request: sink Request): JsonNode =
@@ -106,7 +114,18 @@ func fromJsonHook*(response: out Response, data: JsonNode) =
   else:
     response.error.fromJson(data["error"])
 
-
+func toJsonHook*(response: sink Response): JsonNode =
+  result = %*{
+    "id": response.id,
+    "jsonrpc": "2.0"
+  }
+  if response.passed:
+    result["result"] = response.result
+  else:
+    # TODO: Make a jsonhook
+    result["error"] = %response.error
+    if result["error"]["data"].kind == JNull:
+      result["error"].delete("data")
 
 func isNotification*(x: Request): bool =
   ## Checks if a request is a notification
@@ -127,6 +146,13 @@ func failed(req: Request, code: RPCErrorCode, msg: string, data: JsonNode = newJ
     )
   )
 
+func failed(req: Request, exp: RPCError): Response =
+  ## Constructs an error for an exception
+  return req.failed(exp.code, exp.msg)
+
+func failed(exp: RPCError): Response =
+  return Request(id: some exp.id).failed(exp)
+
 func failed(code: RPCErrorCode, msg: string, data: JsonNode = newJNull()): Response =
   ## Constructs an error. Use this when a valid request is not available
   return Response(
@@ -140,13 +166,13 @@ func failed(code: RPCErrorCode, msg: string, data: JsonNode = newJNull()): Respo
     )
   )
 
-func passed[T](req: Request, result: sink T) =
+proc passed[T](req: Request, res: sink T): Response =
   ## Constructs a response in response to a successful request
   return Response(
     # "If there was an error in detecting the id in the Request object (e.g. Parse error/Invalid Request), it MUST be Null."
     id: req.id.get(newJNull()),
     passed: true,
-    result: result.toJson()
+    result: res.toJson()
   )
 
 proc createNamedTuple(prc: NimNode): NimNode =
@@ -236,31 +262,39 @@ proc on*[T](exec: var Executor, def: MethodDef[T], handler: T) =
   ## a signature
   exec.add(def.name, handler)
 
-proc call*[R](exec: var Executor[R], request: Request): R =
+proc call*[R](exec: Executor[R], request: Request): R =
   ## Handles a method
   let meth = request.meth
   if meth notin exec.handlers:
-    return request.failed(MethodNotFound, fmt"{meth} not registered in executor")
-  exec.handlers[request.meth](request.params)
+    return request.failed(MethodNotFound, fmt"Method not found: '{meth}'").toJson()
 
-proc call*[R](exec: var Executor[R], requests: openArray[Request]): seq[R] =
+  request.passed(exec.handlers[request.meth](request.params)).toJson()
+
+proc call*[R](exec: Executor[R], requests: openArray[Request]): R =
   ## Runs a batch series of calls
   if requests.len == 0:
-    return failed(InvalidRequest, "Batch calls must have at least 1 call")
-  result = newSeqOfCap[R](requests.len)
+    return failed(InvalidRequest, "Batch calls must have at least 1 call").toJson()
+  result = newJArray()
   for request in requests:
     result &= exec.call(request)
 
+proc call[R](exec: Executor[R], request: JsonNode, typ: typedesc): R =
+  ## Handles a request that is still in JSON. This handles exceptions that can
+  ## occur when deserialising the JSON
+  try:
+    exec.call(request.jsonTo(typ))
+  except RPCError as e:
+    return failed(e[]).toJson()
 
-proc call*[R](exec: var Executor[R], request: JsonNode): R =
+proc call*[R](exec: Executor[R], request: JsonNode): R =
   ## Handle a request that is still in JSON.
   ## Handles both batch calls and single calls
   case request.kind
   of JArray:
-    exec.call(request.jsonTo(seq[Request]))
+    exec.call(request, seq[Request])
   of JObject:
-    exec.call(request.jsonTo(seq[Request]))
+    exec.call(request, Request)
   else:
-    return failed(InvalidRequest, "Request must be a single call or an array of batch calls")
+    return failed(InvalidRequest, "Request must be a single call or an array of batch calls").toJson()
 
 export critbits

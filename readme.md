@@ -1,6 +1,7 @@
 # JayonRPC
 
-> Best name I could come up with
+> Best name I could come up with. I just needed a decent RPC for a few projects
+
 
 JSONRPC implementation that is transport agnostic. Supports different executors so it can be used in sync/async context.
 Just takes in JSON and sends back JSON, rest is up to you!
