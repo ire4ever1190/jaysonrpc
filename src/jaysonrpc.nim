@@ -276,15 +276,27 @@ proc call*[R](exec: Executor[R], requests: openArray[Request]): R =
     return failed(InvalidRequest, "Batch calls must have at least 1 call").toJson()
   result = newJArray()
   for request in requests:
-    result &= exec.call(request)
+    let resp = exec.call(request)
+    if not request.isNotification:
+      result &= resp
+
+  if result.len == 0:
+    return nil
 
 proc call[R](exec: Executor[R], request: JsonNode, typ: typedesc): R =
   ## Handles a request that is still in JSON. This handles exceptions that can
   ## occur when deserialising the JSON
+  var data: typ
+  # Handle any exceptions that come from deserialising the JSON
   try:
-    exec.call(request.jsonTo(typ))
+    data.fromJson(request)
   except RPCError as e:
     return failed(e[]).toJson()
+  except CatchableError as e:
+    # TODO: Better error messages
+    return failed(InvalidRequest, "Invalid request object", %*{"msg": e.msg, "err": $e.name}).toJson()
+
+  return exec.call(data)
 
 proc call*[R](exec: Executor[R], request: JsonNode): R =
   ## Handle a request that is still in JSON.
