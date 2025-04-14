@@ -5,7 +5,7 @@
 import std/[unittest, json, strformat, macros]
 import jaysonrpc
 
-var rpc = Executor[JsonNode]()
+var rpc = Executor[string]()
 
 rpc.on("subtract") do (minuend, subtrahend: int) -> int:
   return minuend - subtrahend
@@ -19,115 +19,108 @@ proc parseOrNil(x: string): JsonNode =
 
 # Test case
 
-macro generateTestCases() =
-  ## Generate test cases for std/unittest so this is easier to use
-  result = newStmtList()
+template testCase(name: string, body: untyped) =
+  ## Creates a test case.
+  ## Test case is a series of instructions for whats expected to be sent/recieved.
+  ## Small DSL adds `->` (check send) and `<-` (check response) into the scope. Tests can
+  ## be added on top
+  test name:
+    var resp: string
+    proc `->`(msg: string) =
+      resp = rpc.call(msg)
 
-  let cases: seq[tuple[name: string, req, resp: JsonNode]] = @[
-    (
-      "RPC Call with positional parameters 1",
-      %* {"jsonrpc": "2.0", "method": "subtract", "params": [42, 23], "id": 1},
-      %* {"id": 1, "jsonrpc": "2.0", "result": 19}
-    ),
-    (
-      "RPC Call with positional parameters 2",
-      %* {"jsonrpc": "2.0", "method": "subtract", "params": [23, 42], "id": 2},
-      %* {"id": 2, "jsonrpc": "2.0", "result": -19}
-    ),
-    (
-      "RPC Call with named parameters 1",
-      %* {"jsonrpc": "2.0", "method": "subtract", "params": {"subtrahend": 23, "minuend": 42}, "id": 3},
-      %* {"id": 3, "jsonrpc": "2.0", "result": 19}
-    ),
-    (
-      "RPC call with named parameters 2",
-      %* {"jsonrpc": "2.0", "method": "subtract", "params": {"minuend": 42, "subtrahend": 23}, "id": 4},
-      %* {"id": 4, "jsonrpc": "2.0", "result": 19}
-    ),
-    (
-      "Notification 1", # TODO: Add check that the notification does get ran
-      %* {"jsonrpc": "2.0", "method": "update", "params": [1,2,3,4,5]},
-      nil # Notifications don't send anything back
-    ),
-    (
-      "Notification 2",
-      %* {"jsonrpc": "2.0", "method": "foobar"},
-      nil # Is an error, but notifications send nothing back
-    ),
-    (
-      "RPC call of non-existent method",
-      %* {"jsonrpc": "2.0", "method": "foobar", "id": "1"},
-      %* {"id": "1", "jsonrpc": "2.0", "error": {"code": -32601, "message": "Method not found: 'foobar'"}}
-    ),
-    # We take in pre-parsed JSON, so can't actually get invalid JSON.
-    # Transports must handle this error
-    # "RPC call with invalid JSON"
-    (
-      "RPC call with invalid request object",
-      %* {"jsonrpc": "2.0", "method": 1, "params": "bar"},
-      %* {"id": nil, "jsonrpc": "2.0", "error": {"code": -32600, "message": "Params must be an array/object of arguments"}}
-    ),
-    # Same for batch calls, we deal with pre-parsed JSON
-    # "RPCC call Batch, invalid JSON"
-    (
-      "RPC call with an empty array",
-      %* [],
-      %* {"id": nil, "jsonrpc": "2.0", "error": {"code": -32600, "message": "Batch calls must have at least 1 call"}}
-    ),
-    (
-      "RPC call with invalid batch (but not empty)",
-      %* [1],
-      %* [
-        {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": nil}
-      ]
-    ),
-    (
-      "RPC call with invalid batch",
-      %* [1, 2, 3],
-      %* [
-        {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": nil},
-        {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": nil},
-        {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": nil}
-      ]
-    ),
-    (
-      "RPC call batch",
-      %* [
-        {"jsonrpc": "2.0", "method": "sum", "params": [1,2,4], "id": "1"},
-        {"jsonrpc": "2.0", "method": "notify_hello", "params": [7]},
-        {"jsonrpc": "2.0", "method": "subtract", "params": [42,23], "id": "2"},
-        {"foo": "boo"},
-        {"jsonrpc": "2.0", "method": "foo.get", "params": {"name": "myself"}, "id": "5"},
-        {"jsonrpc": "2.0", "method": "get_data", "id": "9"}
-      ],
-      %* [
-        {"jsonrpc": "2.0", "result": 7, "id": "1"},
-        {"jsonrpc": "2.0", "result": 19, "id": "2"},
-        {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": nil},
-        {"jsonrpc": "2.0", "error": {"code": -32601, "message": "Method not found"}, "id": "5"},
-        {"jsonrpc": "2.0", "result": ["hello", 5], "id": "9"}
-      ]
-    ),
-    (
-      "RPC call batch (all notifications)",
-      %* [
-        {"jsonrpc": "2.0", "method": "notify_sum", "params": [1,2,4]},
-        {"jsonrpc": "2.0", "method": "notify_hello", "params": [7]}
-      ],
-      nil # Nothing is returned for all notification batches
-    )
+    proc `->`(msg: JsonNode) =
+      -> $ msg
+
+    proc `<-`(expected: string) =
+      check resp.parseJson() == expected.parseJson()
+
+    proc `<-`(expected: JsonNode) =
+      <- $ expected
+
+    body
+
+testCase "RPC Call with positional parameters 1":
+  -> %* {"jsonrpc": "2.0", "method": "subtract", "params": [42, 23], "id": 1}
+  <- %* {"id": 1, "jsonrpc": "2.0", "result": 19}
+
+testCase "RPC Call with positional parameters 2":
+  -> %* {"jsonrpc": "2.0", "method": "subtract", "params": [23, 42], "id": 2}
+  <- %* {"id": 2, "jsonrpc": "2.0", "result": -19}
+
+testCase "RPC Call with named parameters 1":
+  -> %* {"jsonrpc": "2.0", "method": "subtract", "params": {"subtrahend": 23, "minuend": 42}, "id": 3}
+  <- %* {"id": 3, "jsonrpc": "2.0", "result": 19}
+
+testCase "RPC call with named parameters 2":
+  -> %* {"jsonrpc": "2.0", "method": "subtract", "params": {"minuend": 42, "subtrahend": 23}, "id": 4}
+  <- %* {"id": 4, "jsonrpc": "2.0", "result": 19}
+
+testCase "Notifications":
+  -> %* {"jsonrpc": "2.0", "method": "update", "params": [1,2,3,4,5]}
+  <- ""
+  -> %* {"jsonrpc": "2.0", "method": "foobar"}
+  <- ""
+
+testCase "RPC call of non-existent method":
+  -> %* {"jsonrpc": "2.0", "method": "foobar", "id": "1"}
+  <- %* {"id": "1", "jsonrpc": "2.0", "error": {"code": -32601, "message": "Method not found: 'foobar'"}}
+
+testCase "RPC call with invalid JSON":
+  -> """{"jsonrpc": "2.0", "method": "foobar, "params": "bar", "baz]"""
+  <- %* {"jsonrpc": "2.0", "error": {"code": -32700, "message": "Parse error"}, "id": nil}
+
+testCase "RPC call with invalid request object":
+  -> %* {"jsonrpc": "2.0", "method": 1, "params": "bar"}
+  <- %* {"id": nil, "jsonrpc": "2.0", "error": {"code": -32600, "message": "Params must be an array/object of arguments"}}
+
+testCase "RPC call batch, invalid JSON":
+  -> """
+    [
+      {"jsonrpc": "2.0", "method": "sum", "params": [1,2,4], "id": "1"},
+      {"jsonrpc": "2.0", "method"
+    ]
+  """
+  <- %* {"jsonrpc": "2.0", "error": {"code": -32700, "message": "Parse error"}, "id": nil}
+
+testCase "RPC call with an empty array":
+  -> %* []
+  <- %* {"id": nil, "jsonrpc": "2.0", "error": {"code": -32600, "message": "Batch calls must have at least 1 call"}}
+
+testCase "RPC call with invalid batch (but not empty)":
+  -> %* [1]
+  <- %* [
+      {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": nil}
+    ]
+
+testCase "RPC call with invalid batch":
+  -> %* [1, 2, 3]
+  <- %* [
+    {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": nil},
+    {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": nil},
+    {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": nil}
   ]
 
-  for (name, sent, recv) in cases:
-    # Convert to string, quote converts it into JsonNodeObj
-    let
-      strSent = strOrNil sent
-      strRecv = strOrNil recv
-    result.add quote do:
-      test `name`:
-        let
-          res = rpc.call(`strSent`.parseOrNil()).strOrNil()
-          expected = strOrNil `strRecv`.parseOrNil()
-        check res == expected
+testCase "RPC call batch":
+  -> %* [
+    {"jsonrpc": "2.0", "method": "sum", "params": [1,2,4], "id": "1"},
+    {"jsonrpc": "2.0", "method": "notify_hello", "params": [7]},
+    {"jsonrpc": "2.0", "method": "subtract", "params": [42,23], "id": "2"},
+    {"foo": "boo"},
+    {"jsonrpc": "2.0", "method": "foo.get", "params": {"name": "myself"}, "id": "5"},
+    {"jsonrpc": "2.0", "method": "get_data", "id": "9"}
+  ]
+  <- %* [
+    {"jsonrpc": "2.0", "result": 7, "id": "1"},
+    {"jsonrpc": "2.0", "result": 19, "id": "2"},
+    {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": nil},
+    {"jsonrpc": "2.0", "error": {"code": -32601, "message": "Method not found"}, "id": "5"},
+    {"jsonrpc": "2.0", "result": ["hello", 5], "id": "9"}
+  ]
 
-generateTestCases()
+testCase "RPC call batch (all notifications)":
+  -> %* [
+    {"jsonrpc": "2.0", "method": "notify_sum", "params": [1,2,4]},
+    {"jsonrpc": "2.0", "method": "notify_hello", "params": [7]}
+  ]
+  <- ""

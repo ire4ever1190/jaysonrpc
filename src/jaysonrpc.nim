@@ -7,15 +7,26 @@ import std/[
   strformat,
   macros,
   wrapnils,
-  sugar
+  sugar,
+  streams,
+  asyncdispatch
 ]
+
+# TODO: Expose methods for parsing a request, can be handy for adding middlewares
+# TODO: Some kind of context maybe?
 
 type
   Executor*[R] = object
     ## Executor stores all the functions and handles calling them.
     ## Transport is handled separately.
+    # TODO: Add generic parameter for context
     # Return type is generic to allow for async/sync executors
     handlers: CritBitTree[proc (data: JsonNode): R]
+
+  SyncExecutor = Executor[string]
+    ## Synchronous RPC call executor. Not exactly useful, but I use it for tests
+
+  AsyncExecutor = Executor[Future[string]]
 
   MethodDef[T: proc] = object
     ## This is a definition of a method. Used to enforce a spec
@@ -29,13 +40,13 @@ type
 
   Request* = object
     ## A request sent to the server
-    jsonrpc = "2.0"
+    jsonrpc = "2.0" # TODO: Remove?
       ## Version, only 2.0 is implemented
     id*: Option[JsonNode]
       ## ID of the request. If missing then its a notification
     meth*: string
       ## Method getting called
-    params*: JsonNode
+    params*: JsonNode # Type it better maybe? Easier for middlewares
       ## Either an array of positional params or an object of named params
 
   Error* = object
@@ -75,9 +86,14 @@ type
       ## "If there was an error in detecting the id in the Request object (e.g. Parse error/Invalid Request), it MUST be Null."
 
 const
-  InvalidRequest = RPCErrorCode(-32600)
-  InvalidParams = RPCErrorCode(-32602)
-  MethodNotFound = RPCErrorCode(-32601)
+  InvalidRequest* = RPCErrorCode(-32600)
+    ## Request object was invalid
+  InvalidParams* = RPCErrorCode(-32602)
+    ## Parameters passed were invalid
+  MethodNotFound* = RPCErrorCode(-32601)
+    ## Executor couldn't find the method
+  ParseError* = RPCErrorCode(-32700)
+    ## Error when trying to parse incoming JSON
 
 proc `%`*(code: RPCErrorCode): JsonNode {.borrow.}
 proc `$`*(code: RPCErrorCode): string {.borrow.}
@@ -243,15 +259,19 @@ proc parseArgs(data: JsonNode, args: var tuple) =
   else:
     assert false, "Expected either an array of positional params or object of named params"
 
+proc wrap[R](resp: Response, into: typedesc[R]): R =
+  ## Wraps the reponse so it becomes `R`
+  return $ resp.toJson()
+
 macro wrapRPC(handler: proc, into: typedesc): proc =
   ## Wraps a proc so that it matches `into`. Performs the conversion
   ## of the passed JSON into whats expected for the handler
   let tupleVal = handler.createNamedTuple()
   return quote do:
-    proc (data: JsonNode): JsonNode =
+    proc (data: JsonNode): `into` =
       var args = `tupleVal`
       data.parseArgs(args)
-      return `handler`.call(args).toJson()
+      return $ `handler`.call(args).toJson()
 
 proc on*[R](exec: var Executor[R], meth: string, handler: proc) =
   ## Adds a method into the executor. Overwrites a method if it already exists
@@ -263,25 +283,27 @@ proc on*[T](exec: var Executor, def: MethodDef[T], handler: T) =
   exec.add(def.name, handler)
 
 proc call*[R](exec: Executor[R], request: Request): R =
-  ## Handles a method
+  ## Handles a method. This is where the actual execution of
+  ## the method happens
   let meth = request.meth
   if meth notin exec.handlers:
-    return request.failed(MethodNotFound, fmt"Method not found: '{meth}'").toJson()
+    return request.failed(MethodNotFound, fmt"Method not found: '{meth}'").wrap(R)
 
-  request.passed(exec.handlers[request.meth](request.params)).toJson()
+  request.passed(exec.handlers[request.meth](request.params)).wrap(R)
 
 proc call*[R](exec: Executor[R], requests: openArray[Request]): R =
   ## Runs a batch series of calls
-  if requests.len == 0:
-    return failed(InvalidRequest, "Batch calls must have at least 1 call").toJson()
-  result = newJArray()
+
+  var items = "["
   for request in requests:
     let resp = exec.call(request)
     if not request.isNotification:
-      result &= resp
-
-  if result.len == 0:
-    return nil
+      items &= resp & ","
+  if items.len == 0:
+    return ""
+  items.setLen(items.len - 1)
+  items &= "]"
+  return items
 
 proc call[R](exec: Executor[R], request: JsonNode, typ: typedesc): R =
   ## Handles a request that is still in JSON. This handles exceptions that can
@@ -291,22 +313,35 @@ proc call[R](exec: Executor[R], request: JsonNode, typ: typedesc): R =
   try:
     data.fromJson(request)
   except RPCError as e:
-    return failed(e[]).toJson()
+    return failed(e[]).wrap(R)
   except CatchableError as e:
     # TODO: Better error messages
-    return failed(InvalidRequest, "Invalid request object", %*{"msg": e.msg, "err": $e.name}).toJson()
+    return failed(InvalidRequest, "Invalid request object", %*{"msg": e.msg, "err": $e.name}).wrap(R)
 
   return exec.call(data)
 
-proc call*[R](exec: Executor[R], request: JsonNode): R =
+proc call[R](exec: Executor[R], request: JsonNode): R {.inline.} =
   ## Handle a request that is still in JSON.
-  ## Handles both batch calls and single calls
+  ## This is an internal proc, since we don't want people side stepping parsing
   case request.kind
   of JArray:
+    if request.len == 0:
+      return failed(InvalidRequest, "Batch calls must have at least 1 call").wrap(R)
+
     exec.call(request, seq[Request])
   of JObject:
     exec.call(request, Request)
   else:
-    return failed(InvalidRequest, "Request must be a single call or an array of batch calls").toJson()
+    return failed(InvalidRequest, "Request must be a single call or an array of batch calls").wrap(R)
+
+proc call*[R](exec: Executor[R], data: string | Stream): R =
+  ## Handles a call in JSON. This should be used for most purposes since it
+  ## handles parsing errors
+  let data = try:
+      data.parseJson()
+    except JsonParsingError as e:
+      return failed(ParseError, fmt"Invalid JSON: {e.msg}").wrap(R)
+  exec.call(data)
+
 
 export critbits
