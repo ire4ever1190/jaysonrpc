@@ -9,24 +9,38 @@ import std/[
   wrapnils,
   sugar,
   streams,
-  asyncdispatch
+  asyncdispatch,
+  tables
 ]
 
 # TODO: Expose methods for parsing a request, can be handy for adding middlewares
 # TODO: Some kind of context maybe?
 
 type
+  ReturnVal = Option[string]
+    ## Represents a return value from a call. Optional is used to represent if a response
+    ## actually needs to be sent. preprocessed into JSON to avoid and hook issues
+
+  RPCFunction[R] = proc (params: SentParameters): R
+    ## Function that takes in request parameters and returns `R`.
+    ## `R` should be some form of a string, e.g. `Future[string]`, `string`.
+    ## This is to enable using different execution schemes
+
+  ConstructedCall[R] = proc (): R {.closure.}
+    ## Call that has parameters applied, can then be called without
+    ## needing the original request
+
   Executor*[R] = object
-    ## Executor stores all the functions and handles calling them.
-    ## Transport is handled separately.
+    ## Executor stores all the functions, this can then be queried later
+    ## to get the function to then pass to your favourite executor
     # TODO: Add generic parameter for context
     # Return type is generic to allow for async/sync executors
-    handlers: CritBitTree[proc (data: JsonNode): R]
+    handlers: CritBitTree[RPCFunction[R]]
 
-  SyncExecutor = Executor[string]
+  SyncExecutor = Executor[ReturnVal]
     ## Synchronous RPC call executor. Not exactly useful, but I use it for tests
 
-  AsyncExecutor = Executor[Future[string]]
+  AsyncExecutor = Executor[Future[ReturnVal]]
 
   MethodDef[T: proc] = object
     ## This is a definition of a method. Used to enforce a spec
@@ -38,6 +52,22 @@ type
   ID* = distinct JsonNode
     ## ID of a request
 
+  ParamKind = enum
+    Void
+    Positional
+    Named
+
+  SentParameters = object
+    ## Parameters stored in a request.
+    ## Is either a list of positional parameters or a table of named parameters.
+    ## Left up to the wrapped function to handle parsing
+    case kind: ParamKind
+    of Void: discard
+    of Positional:
+      positionalParams: seq[JsonNode]
+    of Named:
+      namedParams: OrderedTable[string, JsonNode]
+
   Request* = object
     ## A request sent to the server
     jsonrpc = "2.0" # TODO: Remove?
@@ -46,8 +76,7 @@ type
       ## ID of the request. If missing then its a notification
     meth*: string
       ## Method getting called
-    params*: JsonNode # Type it better maybe? Easier for middlewares
-      ## Either an array of positional params or an object of named params
+    params*: SentParameters
 
   Error* = object
     ## Error object. Can store extra metadata in `data` that is understood by the handler
@@ -57,7 +86,6 @@ type
       ## Message providing a human description of the message
     data*: JsonNode
       ## Extra metadata to store about the message
-
 
   Response* = object
     ## Response sent back to the caller.
@@ -85,6 +113,14 @@ type
       ## Request that the failure occured in.
       ## "If there was an error in detecting the id in the Request object (e.g. Parse error/Invalid Request), it MUST be Null."
 
+  RPCCalls[R] = object
+    ## Stores all the calls from a request
+    calls: seq[RPCFunction[R]]
+      ## Calls sent
+    isBatch: bool
+      ## Whether the request was batch. Needed to control
+      ## how we form the response
+
 const
   InvalidRequest* = RPCErrorCode(-32600)
     ## Request object was invalid
@@ -98,6 +134,14 @@ const
 proc `%`*(code: RPCErrorCode): JsonNode {.borrow.}
 proc `$`*(code: RPCErrorCode): string {.borrow.}
 
+func fromJsonHook*(params: out SentParameters, data: JsonNode) =
+  case data.kind
+  of JArray:
+    params = SentParameters(kind: Positional, positionalParams: data.elems)
+  of JObject:
+    params = SentParameters(kind: Named, namedParams: data.fields)
+  else:
+    raise (ref ValueError)(msg: fmt"Params must be array or object, not {data.kind}")
 
 func fromJsonHook*(request: out Request, data: JsonNode) =
   ## Hook for parsing the JSON
@@ -108,15 +152,17 @@ func fromJsonHook*(request: out Request, data: JsonNode) =
 
   # "This member MAY be omitted"
   let params = option(data{"params"})
-  if params.map(x => x.kind notin {JArray, JObject}).get(false):
+  if data.kind notin {JArray, JObject}:
     raise (ref RPCError)(id: id.get(newJNull()), code: InvalidRequest, msg: "Params must be an array/object of arguments")
 
   request = Request(
       jsonrpc: data["jsonrpc"].str,
       id: id,
       meth: data["method"].str,
-      params: params.get(newJArray())
+      params: params.map(x => x.jsonTo(SentParameters)).get(SentParameters(kind: Void))
   )
+
+
 
 func toJsonHook*(request: sink Request): JsonNode =
   result = %request
@@ -147,6 +193,24 @@ func isNotification*(x: Request): bool =
   ## Checks if a request is a notification
   x.id.isNone()
 
+func dump(calls: RPCCalls, responses: openArray[ReturnVal]): Option[string] =
+  ## Forms a response from the responses. Responses be from the calls
+  ## in `calls`. If return val is `none()` then you MUST not send a response back
+  if responses.len == 0:
+    return none(string)
+
+  if calls.isBatch:
+    let needed = collect:
+      for resp in responses:
+        if resp.isSome():
+          %resp
+    $needed
+  else:
+    responses[0]
+
+func initError(req: Request, code: RPCErrorCode, msg: string): ref RPCError =
+  ## Creates an [RPCError] from a request
+  return (ref RPCError)(id: req.id.get(newJNull()), code: code, msg: msg)
 
 func failed(req: Request, code: RPCErrorCode, msg: string, data: JsonNode = newJNull()): Response =
   ## Constructs an error in response to a request.
@@ -210,13 +274,11 @@ proc createNamedTuple(prc: NimNode): NimNode =
 
   # Then assign the defaults (TODO)
 
-proc positionalParams(data: JsonNode, args: var tuple) =
+proc positionalParams(data: openArray[JsonNode], args: var tuple) =
   ## Parses positional params from the object
 
   # Do some checks
-  if data.kind != JArray:
-    raise (ref RPCError)(code: InvalidRequest, msg: "Positional params must be an array")
-  elif data.len != args.tupleLen:
+  if data.len != args.tupleLen:
     raise (ref RPCError)(code: InvalidParams, msg: "Expected {args.tupleLen} parameters but got {data.len}")
 
   # Parse each field
@@ -225,11 +287,8 @@ proc positionalParams(data: JsonNode, args: var tuple) =
     field.fromJson(data[i])
     i += 1
 
-proc namedParams(data: JsonNode, args: var tuple, allowedMissing: static seq[string]) =
+proc namedParams(data: OrderedTable[string, JsonNode], args: var tuple, allowedMissing: static seq[string]) =
   ## Parses named params from the object
-  if data.kind != JObject:
-    raise (ref RPCError)(code: InvalidRequest, msg: "Named params must be an object")
-
   for name, field in args.fieldPairs:
     if name notin data and name notin allowedMissing:
       const fieldName = name
@@ -251,10 +310,10 @@ macro call*(prc: proc, args: tuple): untyped =
 proc parseArgs(data: JsonNode, args: var tuple) =
   ## Parses the arguments from `data` into `args`. Handles
   ## both positional and named args
-  case data.kind
-  of JArray:
+  case params.kind
+  of Positional:
     data.positionalParams(args)
-  of JObject:
+  of Named:
     data.namedParams(args, @["test"])
   else:
     assert false, "Expected either an array of positional params or object of named params"
@@ -268,9 +327,9 @@ macro wrapRPC(handler: proc, into: typedesc): proc =
   ## of the passed JSON into whats expected for the handler
   let tupleVal = handler.createNamedTuple()
   return quote do:
-    proc (data: JsonNode): `into` =
+    proc (params: SentParameters): `into` =
       var args = `tupleVal`
-      data.parseArgs(args)
+      params.parseArgs(args)
       return $ `handler`.call(args).toJson()
 
 proc on*[R](exec: var Executor[R], meth: string, handler: proc) =
@@ -282,28 +341,48 @@ proc on*[T](exec: var Executor, def: MethodDef[T], handler: T) =
   ## a signature
   exec.add(def.name, handler)
 
-proc call*[R](exec: Executor[R], request: Request): R =
-  ## Handles a method. This is where the actual execution of
-  ## the method happens
+proc constructFail[R](req: Request, code: RPCErrorCode, msg: string): ConstructedCall[R] =
+  return proc (): R =
+    return req.failed(code, msg).toJson()
+
+
+proc `[]`[R](exec: Executor[R], request: sink Request): ConstructedCall[R] =
+  ## Gets the handler from the executor in a way that keeps reference to the request
   let meth = request.meth
   if meth notin exec.handlers:
-    return request.failed(MethodNotFound, fmt"Method not found: '{meth}'").wrap(R)
+    return request.constructFail(MethodNotFound, fmt"Method not found: '{meth}'")
 
-  request.passed(exec.handlers[request.meth](request.params)).wrap(R)
+  let meth = exec.handlers[meth]
+  return proc (): R =
+    meth(request.params)
 
-proc call*[R](exec: Executor[R], requests: openArray[Request]): R =
-  ## Runs a batch series of calls
+func add[R](calls: var RPCCalls[R], call: ConstructedCall[R]) =
+  calls.calls &= call
 
-  var items = "["
-  for request in requests:
-    let resp = exec.call(request)
-    if not request.isNotification:
-      items &= resp & ","
-  if items.len == 0:
-    return ""
-  items.setLen(items.len - 1)
-  items &= "]"
-  return items
+func initCalls[R](calls: openArray[ConstructedCall[R]], isBatch = calls.len > 0): RPCCalls[R] =
+  return RPCCalls(
+    isBatch: isBatch,
+    calls: calls
+  )
+
+func constructCall(fun: RPCFunction[Rr], request: Request): ConstructedCall[R]
+
+proc getCalls*[R](exec: Executor[R], data: string): RPCCalls[R] =
+  ## Gets all the calls associated with data
+  try:
+    # It could be a batch call or just a single call.
+    # Either way, we just represent it as a batch call
+    data.parseJson().jsonTo(Request)
+  except JsonParsingError:
+    return initCalls([Request(id: none(JsonNode)).constructFail])
+
+  if data.kind notin {JObject, JArray}:
+    raise (ref RPCError)(code: InvalidRequest, msg: "Must either be an array of calls or a single call object")
+
+  result = RPCCalls[R](isBatch: data.kind == JArray)
+  let requests = if result.isBatch: data.jsonTo(seq[Request])
+                 else: @[data.jsonTo(Request)]
+
 
 proc call[R](exec: Executor[R], request: JsonNode, typ: typedesc): R =
   ## Handles a request that is still in JSON. This handles exceptions that can

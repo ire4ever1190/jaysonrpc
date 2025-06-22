@@ -25,3 +25,9 @@ rpc.add("hello") do (x: string) -> string:
 
 echo rpc.call(Request(meth: "hello", params: %* ["hello"]))
 ```
+
+### Implementing
+
+- Response comes in and is parsed into a series of calls. Each call is self contained handler that handles errors, parsing, etc.
+- You implement way of calling said calls
+- Gather the responses and merge them with the original request to get the response string to send back.

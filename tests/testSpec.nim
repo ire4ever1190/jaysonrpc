@@ -19,6 +19,22 @@ proc parseOrNil(x: string): JsonNode =
 
 # Test case
 
+proc checkJSON(a, b: JsonNode): bool =
+  ## Checks if two JSON objects are the same.
+  ## Ignores field order
+  if a.kind != b.kind: return false
+  case a.kind
+  of JNull: return true
+  of JBool, JInt, JFloat, Jstring, JArray: return a == b
+  of JObject:
+    for field, val in a:
+      if b[field] != val:
+        return false
+    for field, val in b:
+      if a[field] != val:
+        return false
+    return true
+
 template testCase(name: string, body: untyped) =
   ## Creates a test case.
   ## Test case is a series of instructions for whats expected to be sent/recieved.
@@ -29,13 +45,15 @@ template testCase(name: string, body: untyped) =
     proc `->`(msg: string) =
       resp = rpc.call(msg)
 
-    proc `->`(msg: JsonNode) =
+    proc `->`(msg: JsonNode) {.used.} =
       -> $ msg
 
     proc `<-`(expected: string) =
-      check resp.parseJson() == expected.parseJson()
+      checkPoint resp
+      checkPoint expected
+      check checkJson(resp.parseJson(), expected.parseJson())
 
-    proc `<-`(expected: JsonNode) =
+    proc `<-`(expected: JsonNode) {.used.} =
       <- $ expected
 
     body
