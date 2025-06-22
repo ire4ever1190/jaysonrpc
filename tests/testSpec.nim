@@ -41,25 +41,27 @@ template testCase(name: string, body: untyped) {.dirty.} =
   ## Small DSL adds `->` (check send) and `<-` (check response) into the scope. Tests can
   ## be added on top
   test name:
-    var resp: string
+    var resp: Option[string]
     proc `->`(msg: string) =
       let calls = rpc.getCalls(msg)
       let responses = collect:
         for call in calls:
           call()
 
-      resp = calls.dump(responses).get()
+      resp = calls.dump(responses)
 
     proc `->`(msg: JsonNode) {.used.} =
       -> $ msg
 
     proc `<-`(expected: string) =
-      checkPoint resp
+      checkPoint $resp
       checkPoint expected
       if expected == "":
-        check resp == ""
+        check resp.isNone()
       else:
-        check checkJson(resp.parseJson(), expected.parseJson())
+        check resp.isSome()
+        if resp.isNone(): return
+        check checkJson(resp.get().parseJson(), expected.parseJson())
 
     proc `<-`(expected: JsonNode) {.used.} =
       <- $ expected

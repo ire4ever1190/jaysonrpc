@@ -344,6 +344,8 @@ proc on*[T](exec: var Executor, def: MethodDef[T], handler: T) =
 proc constructFail[R](req: Request, code: RPCErrorCode, msg: string): ConstructedCall[R] =
   return proc (): Option[R] {.raises: [].} =
     {.cast(raises: []).}:
+      if req.isNotification:
+        return none(JsonNode)
       return some(req.failed(code, msg).toJson())
 
 
