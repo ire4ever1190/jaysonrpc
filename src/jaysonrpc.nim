@@ -195,7 +195,7 @@ func isNotification*(x: Request): bool =
   ## Checks if a request is a notification
   x.id.isNone()
 
-func dump*(calls: RPCCalls, responses: openArray[ReturnVal]): Option[string] =
+func dump*(calls: RPCCalls, responses: openArray[Option[JsonNode]]): Option[string] =
   ## Forms a response from the responses. Responses be from the calls
   ## in `calls`. If return val is `none()` then you MUST not send a response back
   if responses.len == 0:
@@ -213,11 +213,7 @@ func dump*(calls: RPCCalls, responses: openArray[ReturnVal]): Option[string] =
     else:
       none(string)
   else:
-    responses[0]
-
-func initError(req: Request, code: RPCErrorCode, msg: string): ref RPCError =
-  ## Creates an [RPCError] from a request
-  return (ref RPCError)(id: req.id.get(newJNull()), code: code, msg: msg)
+    some $responses[0].get()
 
 func failed(req: Request, code: RPCErrorCode, msg: string, data: JsonNode = newJNull()): Response {.raises: [].}=
   ## Constructs an error in response to a request.
@@ -253,7 +249,7 @@ func failed(code: RPCErrorCode, msg: string, data: JsonNode = newJNull()): Respo
     )
   )
 
-proc passed[T](req: Request, res: sink JsonNode): Response =
+proc passed(req: Request, res: sink JsonNode): Response =
   ## Constructs a response in response to a successful request
   return Response(
     # "If there was an error in detecting the id in the Request object (e.g. Parse error/Invalid Request), it MUST be Null."
@@ -326,10 +322,6 @@ proc parseArgs(params: SentParameters, args: var tuple) =
   else:
     assert false, "Expected either an array of positional params or object of named params"
 
-proc wrap[R](resp: Response, into: typedesc[R]): R =
-  ## Wraps the reponse so it becomes `R`
-  return $ resp.toJson()
-
 macro wrapRPC(handler: proc, into: typedesc): proc =
   ## Wraps a proc so that it matches `into`. Performs the conversion
   ## of the passed JSON into whats expected for the handler
@@ -367,11 +359,11 @@ proc `[]`[R](exec: Executor[R], request: sink Request): ConstructedCall[R] =
 
     # If it doesn't have an ID, it doesn't get a response
     if request.id.isNone():
-      return none(string)
+      return none(JsonNode)
 
     # Form a response object
     {.cast(raises: []).}:
-      return some($request.passed(response).toJson())
+      return some(request.passed(response).toJson())
 
 func add[R](calls: var RPCCalls[R], call: ConstructedCall[R]) =
   calls.calls &= call
