@@ -2,7 +2,7 @@
 ## Only missing invalid JSON requests since we deal with parsed JSON so that is a transport layer problem
 ## https://www.jsonrpc.org/specification#examples
 
-import std/[unittest, json, strformat, macros]
+import std/[unittest, json, strformat, macros, sugar, options]
 import jaysonrpc
 
 var rpc = Executor[string]()
@@ -35,7 +35,7 @@ proc checkJSON(a, b: JsonNode): bool =
         return false
     return true
 
-template testCase(name: string, body: untyped) =
+template testCase(name: string, body: untyped) {.dirty.} =
   ## Creates a test case.
   ## Test case is a series of instructions for whats expected to be sent/recieved.
   ## Small DSL adds `->` (check send) and `<-` (check response) into the scope. Tests can
@@ -43,7 +43,12 @@ template testCase(name: string, body: untyped) =
   test name:
     var resp: string
     proc `->`(msg: string) =
-      resp = rpc.call(msg)
+      let calls = rpc.getCalls(msg)
+      let responses = collect:
+        for call in calls:
+          call()
+
+      resp = calls.dump(responses).get()
 
     proc `->`(msg: JsonNode) {.used.} =
       -> $ msg

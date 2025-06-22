@@ -26,9 +26,10 @@ type
     ## `R` should be some form of a string, e.g. `Future[string]`, `string`.
     ## This is to enable using different execution schemes
 
-  ConstructedCall[R] = proc (): R {.closure.}
+  ConstructedCall[R] = proc (): Option[R] {.closure, raises: [].}
     ## Call that has parameters applied, can then be called without
-    ## needing the original request
+    ## needing the original request.
+    ## If this returns `none` then a response shouldn't be sent
 
   Executor*[R] = object
     ## Executor stores all the functions, this can then be queried later
@@ -115,8 +116,9 @@ type
 
   RPCCalls[R] = object
     ## Stores all the calls from a request
-    calls: seq[RPCFunction[R]]
-      ## Calls sent
+    calls: seq[ConstructedCall[R]]
+      ## Stores all calls sent. These are wrapped so that execution can
+      ## be handled by the user.
     isBatch: bool
       ## Whether the request was batch. Needed to control
       ## how we form the response
@@ -193,7 +195,7 @@ func isNotification*(x: Request): bool =
   ## Checks if a request is a notification
   x.id.isNone()
 
-func dump(calls: RPCCalls, responses: openArray[ReturnVal]): Option[string] =
+func dump*(calls: RPCCalls, responses: openArray[ReturnVal]): Option[string] =
   ## Forms a response from the responses. Responses be from the calls
   ## in `calls`. If return val is `none()` then you MUST not send a response back
   if responses.len == 0:
@@ -204,7 +206,12 @@ func dump(calls: RPCCalls, responses: openArray[ReturnVal]): Option[string] =
       for resp in responses:
         if resp.isSome():
           %resp
-    $needed
+    #  If there are no Response objects contained within the Response array as it is to be sent to the client,
+    # the server MUST NOT return an empty Array and should return nothing at all.
+    if needed.len > 0:
+      some $needed
+    else:
+      none(string)
   else:
     responses[0]
 
@@ -212,7 +219,7 @@ func initError(req: Request, code: RPCErrorCode, msg: string): ref RPCError =
   ## Creates an [RPCError] from a request
   return (ref RPCError)(id: req.id.get(newJNull()), code: code, msg: msg)
 
-func failed(req: Request, code: RPCErrorCode, msg: string, data: JsonNode = newJNull()): Response =
+func failed(req: Request, code: RPCErrorCode, msg: string, data: JsonNode = newJNull()): Response {.raises: [].}=
   ## Constructs an error in response to a request.
   ## Expects the request to not be a notification
   return Response(
@@ -307,14 +314,15 @@ macro call*(prc: proc, args: tuple): untyped =
     result &= nnkDotExpr.newTree(args, ident arg[0].strVal)
 
 
-proc parseArgs(data: JsonNode, args: var tuple) =
-  ## Parses the arguments from `data` into `args`. Handles
+proc parseArgs(params: SentParameters, args: var tuple) =
+  ## Parses the arguments from `params` into `args`. Handles
   ## both positional and named args
+  bind positionalParams, namedParams
   case params.kind
   of Positional:
-    data.positionalParams(args)
+    positionalParams(params.positionalParams, args)
   of Named:
-    data.namedParams(args, @["test"])
+    namedParams(params.namedParams, args, @["test"])
   else:
     assert false, "Expected either an array of positional params or object of named params"
 
@@ -342,39 +350,44 @@ proc on*[T](exec: var Executor, def: MethodDef[T], handler: T) =
   exec.add(def.name, handler)
 
 proc constructFail[R](req: Request, code: RPCErrorCode, msg: string): ConstructedCall[R] =
-  return proc (): R =
-    return req.failed(code, msg).toJson()
+  return proc (): Option[R] {.raises: [].} =
+    {.cast(raises: []).}:
+      return some($ req.failed(code, msg).toJson())
 
 
 proc `[]`[R](exec: Executor[R], request: sink Request): ConstructedCall[R] =
   ## Gets the handler from the executor in a way that keeps reference to the request
   let meth = request.meth
   if meth notin exec.handlers:
-    return request.constructFail(MethodNotFound, fmt"Method not found: '{meth}'")
+    return request.constructFail[:R](MethodNotFound, fmt"Method not found: '{meth}'")
 
-  let meth = exec.handlers[meth]
-  return proc (): R =
-    meth(request.params)
+  let fun = exec.handlers[meth]
+  return proc (): Option[R] =
+    let response = fun(request.params)
+    if request.id.isSome():
+      return some(response)
 
 func add[R](calls: var RPCCalls[R], call: ConstructedCall[R]) =
   calls.calls &= call
 
-func initCalls[R](calls: openArray[ConstructedCall[R]], isBatch = calls.len > 0): RPCCalls[R] =
-  return RPCCalls(
+func initCalls[R](calls: seq[ConstructedCall[R]], isBatch = calls.len > 0): RPCCalls[R] =
+  return RPCCalls[R](
     isBatch: isBatch,
     calls: calls
   )
 
-func constructCall(fun: RPCFunction[Rr], request: Request): ConstructedCall[R]
+iterator items*[R](calls: RPCCalls[R]): ConstructedCall[R] =
+  for call in calls.calls:
+    yield call
 
-proc getCalls*[R](exec: Executor[R], data: string): RPCCalls[R] =
+proc getCalls*[R](exec: Executor[R], json: string): RPCCalls[R] =
   ## Gets all the calls associated with data
-  try:
-    # It could be a batch call or just a single call.
-    # Either way, we just represent it as a batch call
-    data.parseJson().jsonTo(Request)
-  except JsonParsingError:
-    return initCalls([Request(id: none(JsonNode)).constructFail])
+  let data = try:
+      # It could be a batch call or just a single call.
+      # Either way, we just represent it as a batch call
+      json.parseJson()
+    except JsonParsingError:
+      return initCalls(@[Request(id: none(JsonNode)).constructFail[:R](InvalidRequest, "Failed to parse JSON")])
 
   if data.kind notin {JObject, JArray}:
     raise (ref RPCError)(code: InvalidRequest, msg: "Must either be an array of calls or a single call object")
@@ -382,45 +395,9 @@ proc getCalls*[R](exec: Executor[R], data: string): RPCCalls[R] =
   result = RPCCalls[R](isBatch: data.kind == JArray)
   let requests = if result.isBatch: data.jsonTo(seq[Request])
                  else: @[data.jsonTo(Request)]
+  for request in requests:
+    result.calls &= exec[request]
 
-
-proc call[R](exec: Executor[R], request: JsonNode, typ: typedesc): R =
-  ## Handles a request that is still in JSON. This handles exceptions that can
-  ## occur when deserialising the JSON
-  var data: typ
-  # Handle any exceptions that come from deserialising the JSON
-  try:
-    data.fromJson(request)
-  except RPCError as e:
-    return failed(e[]).wrap(R)
-  except CatchableError as e:
-    # TODO: Better error messages
-    return failed(InvalidRequest, "Invalid request object", %*{"msg": e.msg, "err": $e.name}).wrap(R)
-
-  return exec.call(data)
-
-proc call[R](exec: Executor[R], request: JsonNode): R {.inline.} =
-  ## Handle a request that is still in JSON.
-  ## This is an internal proc, since we don't want people side stepping parsing
-  case request.kind
-  of JArray:
-    if request.len == 0:
-      return failed(InvalidRequest, "Batch calls must have at least 1 call").wrap(R)
-
-    exec.call(request, seq[Request])
-  of JObject:
-    exec.call(request, Request)
-  else:
-    return failed(InvalidRequest, "Request must be a single call or an array of batch calls").wrap(R)
-
-proc call*[R](exec: Executor[R], data: string | Stream): R =
-  ## Handles a call in JSON. This should be used for most purposes since it
-  ## handles parsing errors
-  let data = try:
-      data.parseJson()
-    except JsonParsingError as e:
-      return failed(ParseError, fmt"Invalid JSON: {e.msg}").wrap(R)
-  exec.call(data)
 
 
 export critbits
