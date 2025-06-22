@@ -5,7 +5,7 @@
 import std/[unittest, json, strformat, macros, sugar, options]
 import jaysonrpc
 
-var rpc = Executor[string]()
+var rpc = Executor[JsonNode]()
 
 rpc.on("subtract") do (minuend, subtrahend: int) -> int:
   return minuend - subtrahend
@@ -56,7 +56,10 @@ template testCase(name: string, body: untyped) {.dirty.} =
     proc `<-`(expected: string) =
       checkPoint resp
       checkPoint expected
-      check checkJson(resp.parseJson(), expected.parseJson())
+      if expected == "":
+        check resp == ""
+      else:
+        check checkJson(resp.parseJson(), expected.parseJson())
 
     proc `<-`(expected: JsonNode) {.used.} =
       <- $ expected

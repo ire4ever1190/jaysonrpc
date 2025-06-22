@@ -253,13 +253,13 @@ func failed(code: RPCErrorCode, msg: string, data: JsonNode = newJNull()): Respo
     )
   )
 
-proc passed[T](req: Request, res: sink T): Response =
+proc passed[T](req: Request, res: sink JsonNode): Response =
   ## Constructs a response in response to a successful request
   return Response(
     # "If there was an error in detecting the id in the Request object (e.g. Parse error/Invalid Request), it MUST be Null."
     id: req.id.get(newJNull()),
     passed: true,
-    result: res.toJson()
+    result: res
   )
 
 proc createNamedTuple(prc: NimNode): NimNode =
@@ -338,7 +338,7 @@ macro wrapRPC(handler: proc, into: typedesc): proc =
     proc (params: SentParameters): `into` =
       var args = `tupleVal`
       params.parseArgs(args)
-      return $ `handler`.call(args).toJson()
+      return `handler`.call(args).toJson()
 
 proc on*[R](exec: var Executor[R], meth: string, handler: proc) =
   ## Adds a method into the executor. Overwrites a method if it already exists
@@ -352,7 +352,7 @@ proc on*[T](exec: var Executor, def: MethodDef[T], handler: T) =
 proc constructFail[R](req: Request, code: RPCErrorCode, msg: string): ConstructedCall[R] =
   return proc (): Option[R] {.raises: [].} =
     {.cast(raises: []).}:
-      return some($ req.failed(code, msg).toJson())
+      return some(req.failed(code, msg).toJson())
 
 
 proc `[]`[R](exec: Executor[R], request: sink Request): ConstructedCall[R] =
@@ -362,10 +362,16 @@ proc `[]`[R](exec: Executor[R], request: sink Request): ConstructedCall[R] =
     return request.constructFail[:R](MethodNotFound, fmt"Method not found: '{meth}'")
 
   let fun = exec.handlers[meth]
-  return proc (): Option[R] =
+  return proc (): Option[R] {.raises: [].}=
     let response = fun(request.params)
-    if request.id.isSome():
-      return some(response)
+
+    # If it doesn't have an ID, it doesn't get a response
+    if request.id.isNone():
+      return none(string)
+
+    # Form a response object
+    {.cast(raises: []).}:
+      return some($request.passed(response).toJson())
 
 func add[R](calls: var RPCCalls[R], call: ConstructedCall[R]) =
   calls.calls &= call
