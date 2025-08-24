@@ -96,7 +96,7 @@ testCase "RPC call of non-existent method":
 
 testCase "RPC call with invalid JSON":
   -> """{"jsonrpc": "2.0", "method": "foobar, "params": "bar", "baz]"""
-  <- %* {"jsonrpc": "2.0", "error": {"code": -32700, "message": "Parse error"}, "id": nil}
+  <- %* {"jsonrpc": "2.0", "error": {"code": -32700, "message": "Failed to parse JSON"}, "id": nil}
 
 testCase "RPC call with invalid request object":
   -> %* {"jsonrpc": "2.0", "method": 1, "params": "bar"}
@@ -109,7 +109,7 @@ testCase "RPC call batch, invalid JSON":
       {"jsonrpc": "2.0", "method"
     ]
   """
-  <- %* {"jsonrpc": "2.0", "error": {"code": -32700, "message": "Parse error"}, "id": nil}
+  <- %* {"jsonrpc": "2.0", "error": {"code": -32700, "message": "Failed to parse JSON"}, "id": nil}
 
 testCase "RPC call with an empty array":
   -> %* []

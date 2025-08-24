@@ -133,8 +133,10 @@ const
   ParseError* = RPCErrorCode(-32700)
     ## Error when trying to parse incoming JSON
 
+
 proc `%`*(code: RPCErrorCode): JsonNode {.borrow.}
 proc `$`*(code: RPCErrorCode): string {.borrow.}
+func `==`*(a, b: RPCErrorCode): bool {.borrow.}
 
 func fromJsonHook*(params: out SentParameters, data: JsonNode) =
   case data.kind
@@ -145,26 +147,40 @@ func fromJsonHook*(params: out SentParameters, data: JsonNode) =
   else:
     raise (ref ValueError)(msg: fmt"Params must be array or object, not {data.kind}")
 
+func checkedGet*[T](data: JsonNode, key: string, into: typedesc[T]): T =
+  ## Performs a checked get to access `key` from `data` and converts into T
+  if key notin data:
+    raise (ref RPCError)(id: newJNull(), code: InvalidRequest, msg: fmt"Missing {key}")
+  let val = data[key]
+  try:
+    return val.to(into)
+  except JsonKindError:
+    raise (ref RPCError)(id: newJNull(), code: InvalidRequest, msg: fmt"Expected {$T} for {key} but got {val.kind}")
+
+func test[T](opt: Option[T], pred: proc (value: T): bool): bool {.inline.} =
+  ## Tests the value inside the option. Returns false if option is none
+  opt.map(pred).get(false)
+
 func fromJsonHook*(request: out Request, data: JsonNode) =
   ## Hook for parsing the JSON
   # Perform some validation
   let id = option(data{"id"})
-  if id.map(x => x.kind notin {JInt, JString, JNull}).get(false):
+  if id.test(x => x.kind notin {JInt, JString, JNull}):
     raise (ref RPCError)(id: newJNull(), code: InvalidRequest, msg: "`id` must be one int, string, or null")
 
   # "This member MAY be omitted"
   let params = option(data{"params"})
-  if data.kind notin {JArray, JObject}:
+  if params.test(x => x.kind notin {JArray, JObject}):
     raise (ref RPCError)(id: id.get(newJNull()), code: InvalidRequest, msg: "Params must be an array/object of arguments")
 
+  # Check the rest
+
   request = Request(
-      jsonrpc: data["jsonrpc"].str,
+      jsonrpc: data.checkedGet("jsonrpc", string),
       id: id,
-      meth: data["method"].str,
+      meth: data.checkedGet("method", string),
       params: params.map(x => x.jsonTo(SentParameters)).get(SentParameters(kind: Void))
   )
-
-
 
 func toJsonHook*(request: sink Request): JsonNode =
   result = %request
@@ -193,7 +209,8 @@ func toJsonHook*(response: sink Response): JsonNode =
 
 func isNotification*(x: Request): bool =
   ## Checks if a request is a notification
-  x.id.isNone()
+  # Notifications don't have an ID
+  return x.id.isNone()
 
 func dump*(calls: RPCCalls, responses: openArray[Option[JsonNode]]): Option[string] =
   ## Forms a response from the responses. Responses be from the calls
@@ -202,10 +219,10 @@ func dump*(calls: RPCCalls, responses: openArray[Option[JsonNode]]): Option[stri
     return none(string)
 
   if calls.isBatch:
-    let needed = collect:
-      for resp in responses:
-        if resp.isSome():
-          %resp
+    let needed = newJArray()
+    for resp in responses:
+      if resp.isSome():
+        needed &= resp.unsafeGet()
     #  If there are no Response objects contained within the Response array as it is to be sent to the client,
     # the server MUST NOT return an empty Array and should return nothing at all.
     if needed.len > 0:
@@ -344,7 +361,7 @@ proc on*[T](exec: var Executor, def: MethodDef[T], handler: T) =
 proc constructFail[R](req: Request, code: RPCErrorCode, msg: string): ConstructedCall[R] =
   return proc (): Option[R] {.raises: [].} =
     {.cast(raises: []).}:
-      if req.isNotification:
+      if req.isNotification and code notin [ParseError, InvalidRequest]:
         return none(JsonNode)
       return some(req.failed(code, msg).toJson())
 
@@ -381,23 +398,29 @@ iterator items*[R](calls: RPCCalls[R]): ConstructedCall[R] =
     yield call
 
 proc getCalls*[R](exec: Executor[R], json: string): RPCCalls[R] =
-  ## Gets all the calls associated with data
   let data = try:
       # It could be a batch call or just a single call.
       # Either way, we just represent it as a batch call
       json.parseJson()
     except JsonParsingError:
-      return initCalls(@[Request(id: none(JsonNode)).constructFail[:R](InvalidRequest, "Failed to parse JSON")])
+      return initCalls(@[Request(id: none(JsonNode)).constructFail[:R](ParseError, "Failed to parse JSON")], false)
 
   if data.kind notin {JObject, JArray}:
-    raise (ref RPCError)(code: InvalidRequest, msg: "Must either be an array of calls or a single call object")
+    return initCalls(@[Request(id: none(JsonNode)).constructFail[:R](InvalidRequest, "Must either be an array of calls or a single call object")], false)
 
   result = RPCCalls[R](isBatch: data.kind == JArray)
-  let requests = if result.isBatch: data.jsonTo(seq[Request])
-                 else: @[data.jsonTo(Request)]
-  for request in requests:
-    result.calls &= exec[request]
+  # Wrap the data in an array to make it easier
+  let allData = if not result.isBatch: %[data] else: data
+  # Batch calls MUST have atleast 1 call
+  if allData.len == 0:
+    return initCalls(@[Request(id: none(JsonNode)).constructFail[:R](InvalidRequest, "Batch calls must have at least 1 call")], false)
 
+  for data in allData:
+    try:
+      let request = data.jsonTo(Request)
+      result.calls &= exec[request]
+    except RPCError as e:
+      result.calls &= Request(id: none(JsonNode)).constructFail[:R](e.code, e.msg)
 
 
 export critbits
