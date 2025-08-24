@@ -213,7 +213,7 @@ func dump*(calls: RPCCalls, responses: openArray[Option[JsonNode]]): Option[stri
     else:
       none(string)
   else:
-    some $responses[0].get()
+    responses[0].map(proc (x: JsonNode): string = $x)
 
 func failed(req: Request, code: RPCErrorCode, msg: string, data: JsonNode = newJNull()): Response {.raises: [].}=
   ## Constructs an error in response to a request.
