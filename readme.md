@@ -2,9 +2,11 @@
 
 > Best name I could come up with. I just needed a decent RPC for a few projects
 
+> [!WARNING]
+> This is very alpha software, not very well tested
 
-JSONRPC implementation that is transport agnostic. Supports different executors so it can be used in sync/async context.
-Just takes in JSON and sends back JSON, rest is up to you!
+JSONRPC implementation that doesn't come with any transports (You bring it yourself!).
+Just takes in JSON and sends back JSON, rest is up to you!.
 
 ## Features
 
