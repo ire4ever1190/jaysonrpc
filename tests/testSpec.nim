@@ -10,6 +10,14 @@ var rpc = Executor[JsonNode]()
 rpc.on("subtract") do (minuend, subtrahend: int) -> int:
   return minuend - subtrahend
 
+rpc.on("no_args") do () -> int:
+  9
+
+rpc.on("get_data") do () -> (string, int):
+  return ("hello", 5)
+
+rpc.on("sum") do (a, b, c: int) -> int:
+  return a + b + c
 
 proc strOrNil(x: JsonNode): string =
   return if x != nil: $x else: ""
@@ -84,6 +92,10 @@ testCase "RPC call with named parameters 2":
   -> %* {"jsonrpc": "2.0", "method": "subtract", "params": {"minuend": 42, "subtrahend": 23}, "id": 4}
   <- %* {"id": 4, "jsonrpc": "2.0", "result": 19}
 
+testCase "RPC with with no parameters":
+  -> %* {"jsonrpc": "2.0", "method": "no_args", "id": 4}
+  <- %* {"id": 4, "jsonrpc": "2.0", "result": 9}
+
 testCase "Notifications":
   -> %* {"jsonrpc": "2.0", "method": "update", "params": [1,2,3,4,5]}
   <- ""
@@ -141,8 +153,8 @@ testCase "RPC call batch":
   <- %* [
     {"jsonrpc": "2.0", "result": 7, "id": "1"},
     {"jsonrpc": "2.0", "result": 19, "id": "2"},
-    {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": nil},
-    {"jsonrpc": "2.0", "error": {"code": -32601, "message": "Method not found"}, "id": "5"},
+    {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Missing jsonrpc"}, "id": nil},
+    {"jsonrpc": "2.0", "error": {"code": -32601, "message": "Method not found: 'foo.get'"}, "id": "5"},
     {"jsonrpc": "2.0", "result": ["hello", 5], "id": "9"}
   ]
 

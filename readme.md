@@ -8,7 +8,7 @@ Just takes in JSON and sends back JSON, rest is up to you!
 
 ## Features
 
- - [ ] Full JSONRPC spec support
+ - [x] Full JSONRPC spec support
  - [ ] Supports default arguments
  - [ ] Supports multiple transports
  - [ ] Easy generation of client code
@@ -19,11 +19,22 @@ Just takes in JSON and sends back JSON, rest is up to you!
 import src/jaysonrpc
 import std/json
 
+# You register all the calls to an executor.
+# The generic here is what you want it to return
 var rpc = Executor[JsonNode]()
 rpc.add("hello") do (x: string) -> string:
   return x
 
-echo rpc.call(Request(meth: "hello", params: %* ["hello"]))
+# Data then needs to come in as a string
+const rawJson = $ %* {"jsonrpc": "2.0", "method": "subtract", "params": [42, 23], "id": 1}
+# You get a series of calls from the json
+let calls = rpc.getCalls(rawJson)
+# These functions can be called however you want, they are thread safe and handle everything themselves
+let responses = collect:
+  for call in calls:
+    call()
+# Once you collect them back, you can send back a response
+echo calls.dump(responses)
 ```
 
 ### Implementing

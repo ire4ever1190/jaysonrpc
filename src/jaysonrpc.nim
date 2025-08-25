@@ -10,7 +10,7 @@ import std/[
   sugar,
   streams,
   asyncdispatch,
-  tables
+  tables,
 ]
 
 # TODO: Expose methods for parsing a request, can be handy for adding middlewares
@@ -149,6 +149,8 @@ func fromJsonHook*(params: out SentParameters, data: JsonNode) =
 
 func checkedGet*[T](data: JsonNode, key: string, into: typedesc[T]): T =
   ## Performs a checked get to access `key` from `data` and converts into T
+  if data.kind != JObject:
+    raise (ref RPCError)(id: newJNull(), code: InvalidRequest, msg: "Invalid Request")
   if key notin data:
     raise (ref RPCError)(id: newJNull(), code: InvalidRequest, msg: fmt"Missing {key}")
   let val = data[key]
@@ -297,9 +299,9 @@ proc createNamedTuple(prc: NimNode): NimNode =
 proc positionalParams(data: openArray[JsonNode], args: var tuple) =
   ## Parses positional params from the object
 
-  # Do some checks
-  if data.len != args.tupleLen:
-    raise (ref RPCError)(code: InvalidParams, msg: "Expected {args.tupleLen} parameters but got {data.len}")
+  const tupleLen = args.tupleLen
+  if data.len != tupleLen:
+    raise (ref RPCError)(code: InvalidParams, msg: fmt"Expected {tupleLen} parameters but got {data.len}")
 
   # Parse each field
   var i = 0
@@ -336,8 +338,9 @@ proc parseArgs(params: SentParameters, args: var tuple) =
     positionalParams(params.positionalParams, args)
   of Named:
     namedParams(params.namedParams, args, @["test"])
-  else:
-    assert false, "Expected either an array of positional params or object of named params"
+  of Void: discard
+  # else:
+    # assert false, "Expected either an array of positional params or object of named params"
 
 macro wrapRPC(handler: proc, into: typedesc): proc =
   ## Wraps a proc so that it matches `into`. Performs the conversion
@@ -418,9 +421,9 @@ proc getCalls*[R](exec: Executor[R], json: string): RPCCalls[R] =
   for data in allData:
     try:
       let request = data.jsonTo(Request)
-      result.calls &= exec[request]
+      result &= exec[request]
     except RPCError as e:
-      result.calls &= Request(id: none(JsonNode)).constructFail[:R](e.code, e.msg)
+      result &= Request(id: none(JsonNode)).constructFail[:R](e.code, e.msg)
 
 
 export critbits
