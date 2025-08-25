@@ -326,7 +326,7 @@ macro call*(prc: proc, args: tuple): untyped =
     assert foo.call((a: 1, b: 2)) == 3
   result = newCall(prc)
   for arg in args.getTypeImpl():
-    if arg.kind != nnkExprColonExpr:
+    if arg.kind != nnkIdentDefs:
       "Tuple must be made of named arguments".error(arg)
     result &= nnkDotExpr.newTree(args, ident arg[0].strVal)
 
@@ -389,9 +389,6 @@ proc `[]`[R](exec: Executor[R], request: sink Request): ConstructedCall[R] =
     {.cast(raises: []).}:
       return some(request.passed(response).toJson())
 
-func add[R](calls: var RPCCalls[R], call: ConstructedCall[R]) =
-  calls.calls &= call
-
 func initCalls[R](calls: seq[ConstructedCall[R]], isBatch = calls.len > 0): RPCCalls[R] =
   return RPCCalls[R](
     isBatch: isBatch,
@@ -423,9 +420,9 @@ proc getCalls*[R](exec: Executor[R], json: string): RPCCalls[R] =
   for data in allData:
     try:
       let request = data.jsonTo(Request)
-      result &= exec[request]
+      result.calls &= exec[request]
     except RPCError as e:
-      result &= Request(id: none(JsonNode)).constructFail[:R](e.code, e.msg)
+      result.calls &= Request(id: none(JsonNode)).constructFail[:R](e.code, e.msg)
 
 
 export critbits
