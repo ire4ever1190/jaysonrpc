@@ -36,9 +36,3 @@ let responses = collect:
 # Once you collect them back, you can send back a response
 echo calls.dump(responses)
 ```
-
-### Implementing
-
-- Response comes in and is parsed into a series of calls. Each call is self contained handler that handles errors, parsing, etc.
-- You implement way of calling said calls
-- Gather the responses and merge them with the original request to get the response string to send back.
