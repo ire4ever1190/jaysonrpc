@@ -323,9 +323,11 @@ macro call*(prc: proc, args: tuple): untyped =
   runnableExamples:
     proc foo(a, b: int): int = a + b
 
-    assert foo.call((1, 2)) == 3
+    assert foo.call((a: 1, b: 2)) == 3
   result = newCall(prc)
   for arg in args.getTypeImpl():
+    if arg.kind != nnkExprColonExpr:
+      "Tuple must be made of named arguments".error(arg)
     result &= nnkDotExpr.newTree(args, ident arg[0].strVal)
 
 

@@ -2,7 +2,7 @@
 
 version       = "0.1.0"
 author        = "Jake Leahy"
-description   = "Transport agnostic JSONRPC library"
+description   = "Transport agnostic JSON-RPC library"
 license       = "MIT"
 srcDir        = "src"
 
