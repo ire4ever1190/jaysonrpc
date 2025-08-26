@@ -123,11 +123,11 @@ type
       error*: Error
         ## Error that occured from the call
 
-  RPCErrorCode = distinct int
+  RPCErrorCode* = distinct int
     ## Error codes for JSONRPC. Stored as distinct int instead of enum
     ## so that it can be extended
 
-  RPCError = object of CatchableError
+  RPCError* = object of CatchableError
     ## Exception to throw about an error
     code*: RPCErrorCode
       ## Corresponding error code defined in the spec
@@ -153,6 +153,8 @@ const
     ## Executor couldn't find the method
   ParseError* = RPCErrorCode(-32700)
     ## Error when trying to parse incoming JSON
+  ServerError* = RPCErrorCode(-32603)
+    ## Error from internal handler
 
 
 proc `%`*(code: RPCErrorCode): JsonNode {.borrow.}
@@ -373,7 +375,12 @@ macro wrapRPC(handler: proc, into: typedesc): proc =
     proc (params: SentParameters): `into` =
       var args = `tupleVal`
       params.parseArgs(args)
-      return `handler`.call(args).toJson()
+      when typeof(`handler`.call(args)) is void:
+        `handler`.call(args)
+        # void returns are treated as null since the `result` member is required
+        return newJNull()
+      else:
+        return `handler`.call(args).toJson()
 
 proc on*[R](exec: var Executor[R], meth: string, handler: proc) =
   ## Adds a method into the executor. Overwrites a method if it already exists
@@ -400,8 +407,11 @@ proc `[]`[R](exec: Executor[R], request: sink Request): ConstructedCall[R] =
 
   let fun = exec.handlers[meth]
   return proc (): Option[R] {.raises: [].}=
-    let response = fun(request.params)
-
+    let response = try: fun(request.params)
+                   except Exception as e:
+                     {.cast(raises: []).}:
+                       let val = some(request.failed(ServerError, e.msg).toJson())
+                     return val
     # If it doesn't have an ID, it doesn't get a response
     if request.id.isNone():
       return none(JsonNode)
