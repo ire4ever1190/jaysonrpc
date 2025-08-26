@@ -183,7 +183,7 @@ suite "Errors":
     <- %* {"id": "1", "jsonrpc": "2.0", "error": {"code": -32603, "message": "Hello"}}
 
   testCase "If handler throws an error it is returned":
-    -> %* {"jsonrpc": "2.0", "method": "error", "id": "1"}
+    -> %* {"jsonrpc": "2.0", "method": "failedSpecial", "id": "1"}
     <- %* {"id": "1", "jsonrpc": "2.0", "error": {"code": -32000, "message": "Failed at something specific"}}
 
 

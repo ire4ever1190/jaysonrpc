@@ -409,8 +409,10 @@ proc `[]`[R](exec: Executor[R], request: sink Request): ConstructedCall[R] =
   return proc (): Option[R] {.raises: [].}=
     let response = try: fun(request.params)
                    except Exception as e:
+                     let code = if e of RPCError: (ref RPCError)(e).code
+                                else: ServerError
                      {.cast(raises: []).}:
-                       let val = some(request.failed(ServerError, e.msg).toJson())
+                       let val = some(request.failed(code, e.msg).toJson())
                      return val
     # If it doesn't have an ID, it doesn't get a response
     if request.id.isNone():
