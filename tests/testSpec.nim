@@ -19,6 +19,12 @@ rpc.on("get_data") do () -> (string, int):
 rpc.on("sum") do (a, b, c: int) -> int:
   return a + b + c
 
+rpc.on("error") do ():
+  raise (ref CatchableError)(msg: "Hello")
+
+rpc.on("void") do ():
+  return
+
 proc strOrNil(x: JsonNode): string =
   return if x != nil: $x else: ""
 
@@ -164,3 +170,11 @@ testCase "RPC call batch (all notifications)":
     {"jsonrpc": "2.0", "method": "notify_hello", "params": [7]}
   ]
   <- ""
+
+testCase "If handler throws an error it is returned":
+  -> %* {"jsonrpc": "2.0", "method": "error", "id": "1"}
+  <- %* {"id": "1", "jsonrpc": "2.0", "error": {"code": -32603, "message": "Hello"}}
+
+testCase "Void returns null":
+  -> %* {"jsonrpc": "2.0", "method": "void", "id": "1"}
+  <- %* {"id": "1", "jsonrpc": "2.0", "result": nil}
