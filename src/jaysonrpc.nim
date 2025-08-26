@@ -13,6 +13,27 @@ import std/[
   tables,
 ]
 
+## This is an implementation of the [JSON-RPC protocol](https://www.jsonrpc.org).
+
+runnableExamples:
+  import std/sugar # for collect:
+
+  var rpc = Executor[JsonNode]()
+  rpc.on("hello") do (x: string) -> string:
+    return x
+
+  # Data then needs to come in as a string
+  let rawJson = $ %* {"jsonrpc": "2.0", "method": "subtract", "params": [42, 23], "id": 1}
+  # You get a series of calls from the json
+  let calls = rpc.getCalls(rawJson)
+  assert calls.len == 1 # This is not a batch call, so we have one call
+  # These functions can be called however you want, they are thread safe and handle everything themselves
+  let responses = collect:
+    for call in calls:
+      call()
+  # Once you collect them back, you can send back a response
+  echo calls.dump(responses)
+
 # TODO: Expose methods for parsing a request, can be handy for adding middlewares
 # TODO: Some kind of context maybe?
 
@@ -71,7 +92,7 @@ type
 
   Request* = object
     ## A request sent to the server
-    jsonrpc = "2.0" # TODO: Remove?
+    jsonrpc* = "2.0"
       ## Version, only 2.0 is implemented
     id*: Option[JsonNode]
       ## ID of the request. If missing then its a notification
@@ -102,11 +123,11 @@ type
       error*: Error
         ## Error that occured from the call
 
-  RPCErrorCode = distinct int
+  RPCErrorCode* = distinct int
     ## Error codes for JSONRPC. Stored as distinct int instead of enum
     ## so that it can be extended
 
-  RPCError = object of CatchableError
+  RPCError* = object of CatchableError
     ## Exception to throw about an error
     code*: RPCErrorCode
       ## Corresponding error code defined in the spec
@@ -132,6 +153,8 @@ const
     ## Executor couldn't find the method
   ParseError* = RPCErrorCode(-32700)
     ## Error when trying to parse incoming JSON
+  ServerError* = RPCErrorCode(-32603)
+    ## Error from internal handler
 
 
 proc `%`*(code: RPCErrorCode): JsonNode {.borrow.}
@@ -352,7 +375,12 @@ macro wrapRPC(handler: proc, into: typedesc): proc =
     proc (params: SentParameters): `into` =
       var args = `tupleVal`
       params.parseArgs(args)
-      return `handler`.call(args).toJson()
+      when typeof(`handler`.call(args)) is void:
+        `handler`.call(args)
+        # void returns are treated as null since the `result` member is required
+        return newJNull()
+      else:
+        return `handler`.call(args).toJson()
 
 proc on*[R](exec: var Executor[R], meth: string, handler: proc) =
   ## Adds a method into the executor. Overwrites a method if it already exists
@@ -379,8 +407,13 @@ proc `[]`[R](exec: Executor[R], request: sink Request): ConstructedCall[R] =
 
   let fun = exec.handlers[meth]
   return proc (): Option[R] {.raises: [].}=
-    let response = fun(request.params)
-
+    let response = try: fun(request.params)
+                   except Exception as e:
+                     let code = if e of RPCError: (ref RPCError)(e).code
+                                else: ServerError
+                     {.cast(raises: []).}:
+                       let val = some(request.failed(code, e.msg).toJson())
+                     return val
     # If it doesn't have an ID, it doesn't get a response
     if request.id.isNone():
       return none(JsonNode)
@@ -399,7 +432,13 @@ iterator items*[R](calls: RPCCalls[R]): ConstructedCall[R] =
   for call in calls.calls:
     yield call
 
+func len*(calls: RPCCalls): int =
+  ## Number of calls stored
+  calls.calls.len
+
 proc getCalls*[R](exec: Executor[R], json: string): RPCCalls[R] =
+  ## Returns all the calls stored in a JSON message.
+  ## Once all have been ran, they should be sent back to [dump]
   let data = try:
       # It could be a batch call or just a single call.
       # Either way, we just represent it as a batch call
@@ -426,3 +465,4 @@ proc getCalls*[R](exec: Executor[R], json: string): RPCCalls[R] =
 
 
 export critbits
+export json

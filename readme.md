@@ -21,13 +21,12 @@ Go to the [docs here](https://ire4ever1190.github.io/jaysonrpc/jaysonrpc.html) f
 ## Example
 
 ```nim
-import src/jaysonrpc
-import std/json
+import pkg/jaysonrpc
 
 # You register all the calls to an executor.
 # The generic here is what you want it to return
 var rpc = Executor[JsonNode]()
-rpc.add("hello") do (x: string) -> string:
+rpc.on("hello") do (x: string) -> string:
   return x
 
 # Data then needs to come in as a string
