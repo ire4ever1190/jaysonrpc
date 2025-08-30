@@ -27,7 +27,7 @@ runnableExamples:
     return x
 
   # Data then needs to come in as a string
-  let rawJson = $ %* {"jsonrpc": "2.0", "method": "subtract", "params": [42, 23], "id": 1}
+  let rawJson = $ %* {"jsonrpc": "2.0", "method": "hello", "params": ["world"], "id": 1}
   # You get a series of calls from the json
   let calls = rpc.getCalls(rawJson)
   assert calls.len == 1 # This is not a batch call, so we have one call
