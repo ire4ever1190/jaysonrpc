@@ -6,7 +6,7 @@ import std/[unittest, json, strformat, macros, sugar, options]
 import jaysonrpc
 import ./utils
 
-var rpc = Executor[JsonNode]()
+var rpc = initExecutor[JsonNode]()
 
 rpc.on("subtract") do (minuend, subtrahend: int) -> int:
   return minuend - subtrahend
@@ -51,7 +51,7 @@ suite "RPC Call with named parameters":
 
   testCase "Can't pass unknown args":
     -> %* {"jsonrpc": "2.0", "method": "subtract", "params": {"minuend": 42, "subtrahend": 23, "foo": 1}, "id": 4}
-    <- %* {"id": nil, "jsonrpc": "2.0", "error": {"code": -32600, "message": "Unknown argument 'foo'"}}
+    <- %* {"id": 4, "jsonrpc": "2.0", "error": {"code": InvalidParams, "message": "Unknown argument: 'foo'"}}
 
 testCase "RPC with with no parameters":
   -> %* {"jsonrpc": "2.0", "method": "no_args", "id": 4}
@@ -72,7 +72,7 @@ testCase "RPC call with invalid JSON":
   <- %* {"jsonrpc": "2.0", "error": {"code": -32700, "message": "Failed to parse JSON"}, "id": nil}
 
 testCase "RPC call with invalid request object":
-  -> %* {"jsonrpc": "2.0", "method": 1, "params": "bar"}
+  -> %* {"jsonrpc": "2.0", "method": 1, "params": "bar", "id": 1}
   <- %* {"id": nil, "jsonrpc": "2.0", "error": {"code": -32600, "message": "Params must be an array/object of arguments"}}
 
 testCase "RPC call batch, invalid JSON":

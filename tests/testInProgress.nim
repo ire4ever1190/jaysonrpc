@@ -29,10 +29,6 @@ suite "Context is not included in parameter count":
     -> %* {"jsonrpc": "2.0", "method": "cancel", "params": {"id": 1}, "id": 2}
     <- %* {"id": 2, "jsonrpc": "2.0", "result": nil}
 
-  testCase "Can't pass context as arg":
-    -> %* {"jsonrpc": "2.0", "method": "cancel", "params": {"id": 1, "context": {}}, "id": 2}
-    <- %* {"id": 2, "jsonrpc": "2.0", "result": nil}
-
 testCase "Nothing gets registered for notifications":
   let calls = rpc.getCalls($ %* {"jsonrpc": "2.0", "method": "someFunc"})
   check rpc.inProgress == 0

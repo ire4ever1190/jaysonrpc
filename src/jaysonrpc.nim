@@ -151,7 +151,7 @@ type
     ## Exception to throw about an error
     code*: RPCErrorCode
       ## Corresponding error code defined in the spec
-    id*: JsonNode
+    id*: Option[JsonNode]
       ## Request that the failure occured in.
       ## "If there was an error in detecting the id in the Request object (e.g. Parse error/Invalid Request), it MUST be Null."
 
@@ -206,14 +206,14 @@ func fromJsonHook*(params: out SentParameters, data: JsonNode) =
 func checkedGet*[T](data: JsonNode, key: string, into: typedesc[T]): T =
   ## Performs a checked get to access `key` from `data` and converts into T
   if data.kind != JObject:
-    raise (ref RPCError)(id: newJNull(), code: InvalidRequest, msg: "Invalid Request")
+    raise (ref RPCError)(id: none(JsonNode), code: InvalidRequest, msg: "Invalid Request")
   if key notin data:
-    raise (ref RPCError)(id: newJNull(), code: InvalidRequest, msg: fmt"Missing {key}")
+    raise (ref RPCError)(id: none(JsonNode), code: InvalidRequest, msg: fmt"Missing {key}")
   let val = data[key]
   try:
     return val.to(into)
   except JsonKindError:
-    raise (ref RPCError)(id: newJNull(), code: InvalidRequest, msg: fmt"Expected {$T} for {key} but got {val.kind}")
+    raise (ref RPCError)(id: none(JsonNode), code: InvalidRequest, msg: fmt"Expected {$T} for {key} but got {val.kind}")
 
 func test[T](opt: Option[T], pred: proc (value: T): bool): bool {.inline.} =
   ## Tests the value inside the option. Returns false if option is none
@@ -258,12 +258,12 @@ func fromJsonHook*(request: out Request, data: JsonNode) =
   # Perform some validation
   let id = option(data{"id"})
   if id.test(x => x.kind notin {JInt, JString, JNull}):
-    raise (ref RPCError)(id: newJNull(), code: InvalidRequest, msg: "`id` must be one int, string, or null")
+    raise (ref RPCError)(id: none(JsonNode), code: InvalidRequest, msg: "`id` must be one int, string, or null")
 
   # "This member MAY be omitted"
   let params = option(data{"params"})
   if params.test(x => x.kind notin {JArray, JObject}):
-    raise (ref RPCError)(id: id.get(newJNull()), code: InvalidRequest, msg: "Params must be an array/object of arguments")
+    raise (ref RPCError)(id: id, code: InvalidRequest, msg: "Params must be an array/object of arguments")
 
   # Check the rest
 
@@ -343,7 +343,7 @@ func failed(req: Request, exp: RPCError): Response =
   return req.failed(exp.code, exp.msg)
 
 func failed(exp: RPCError): Response =
-  return Request(id: some exp.id).failed(exp)
+  return Request(id: exp.id).failed(exp)
 
 func failed(code: RPCErrorCode, msg: string, data: JsonNode = newJNull()): Response =
   ## Constructs an error. Use this when a valid request is not available
@@ -402,6 +402,16 @@ proc positionalParams(data: openArray[JsonNode], args: var tuple) =
 
 proc namedParams(data: OrderedTable[string, JsonNode], args: var tuple, allowedMissing: static seq[string]) =
   ## Parses named params from the object
+  # Check every key in the passed object to ensure there aren't extra keys
+  const allowedKeys = block:
+    var allowed = initHashSet[string]()
+    for name, _ in args.fieldPairs:
+      allowed.incl(name)
+    allowed
+  for key in data.keys:
+    if key notin allowedKeys:
+      raise (ref RPCError)(code: InvalidParams, msg: fmt"Unknown argument: '{key}'")
+
   for name, field in args.fieldPairs:
     when type(field) is not Context: # We must skip the context param
       if name notin data and name notin allowedMissing:
@@ -445,7 +455,13 @@ macro wrapRPC(handler: proc, into: typedesc): RPCFunction =
 
       # Convert the params
       var args = `tupleVal`
-      request.params.parseArgs(args)
+      try:
+        request.params.parseArgs(args)
+      except RPCError as e:
+        # Attach id
+        e.id = request.id
+        raise
+
       # See if there is a context param we need to fill in
       for field in args.fields:
         when type(field) is Context:
