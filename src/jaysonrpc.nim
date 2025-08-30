@@ -11,7 +11,10 @@ import std/[
   streams,
   asyncdispatch,
   tables,
+  sets
 ]
+
+import pkg/threading/rwlock
 
 ## This is an implementation of the [JSON-RPC protocol](https://www.jsonrpc.org).
 
@@ -38,11 +41,17 @@ runnableExamples:
 # TODO: Some kind of context maybe?
 
 type
+  IDKind = enum
+    ## Different formats an ID can be
+    Numeric ## ID is s
+    String
+    None
+
   ReturnVal = Option[string]
     ## Represents a return value from a call. Optional is used to represent if a response
     ## actually needs to be sent. preprocessed into JSON to avoid and hook issues
 
-  RPCFunction[R] = proc (params: SentParameters): R
+  RPCFunction[R] = proc (inProgress: InProgressRequests, request: Request): R
     ## Function that takes in request parameters and returns `R`.
     ## `R` should be some form of a string, e.g. `Future[string]`, `string`.
     ## This is to enable using different execution schemes
@@ -52,12 +61,22 @@ type
     ## needing the original request.
     ## If this returns `none` then a response shouldn't be sent
 
+  InProgressRequests = ref object
+    ## Tracks in progress requests
+    inProgressLock: RwLock
+      ## Lock on the in progress table
+    inProgress {.guard: inProgressLock.}: HashSet[JsonNode]
+      ## Table of request ID to whether they have been cancelled or not.
+      ## i.e. if the value is false, then the request has been cancelled by the server.
+      ## It is the request handlers just to check this on a regular basis.
+
   Executor*[R] = object
     ## Executor stores all the functions, this can then be queried later
     ## to get the function to then pass to your favourite executor
     # TODO: Add generic parameter for context
     # Return type is generic to allow for async/sync executors
     handlers: CritBitTree[RPCFunction[R]]
+    inProgress: InProgressRequests
 
   SyncExecutor = Executor[ReturnVal]
     ## Synchronous RPC call executor. Not exactly useful, but I use it for tests
@@ -144,6 +163,13 @@ type
       ## Whether the request was batch. Needed to control
       ## how we form the response
 
+  Context* = object
+    inProgress {.cursor.}: InProgressRequests
+      ## Pointer to the executor to get cancellation info
+    id: Option[JsonNode]
+      ## ID of the current request getting executed.
+      ## If its a notification it will be None
+
 const
   InvalidRequest* = RPCErrorCode(-32600)
     ## Request object was invalid
@@ -185,6 +211,35 @@ func checkedGet*[T](data: JsonNode, key: string, into: typedesc[T]): T =
 func test[T](opt: Option[T], pred: proc (value: T): bool): bool {.inline.} =
   ## Tests the value inside the option. Returns false if option is none
   opt.map(pred).get(false)
+
+func isCancelled(this: InProgressRequests, id: JsonNode): bool =
+  ## Internal function for checking if a request should still be running
+  readWith this.inProgressLock:
+    return id in this.inProgress
+
+func cancel(this: InProgressRequests, id: JsonNode) =
+  ## Cancels a request
+  writeWith this.inProgressLock:
+    this.inProgress.excl(id)
+
+func add(this: InProgressRequests, id: JsonNode) =
+  ## Registers a request is running
+  writeWith this.inProgressLock:
+    this.inProgress.incl(id)
+
+func isCancelled*(ctx: Context, requestId: JsonNode): bool =
+  ctx.inProgress.isCancelled(requestId)
+
+func isCancelled*(ctx: Context): bool =
+  ## Checks if the current request has been cancelled.
+  # Notifications have no ID so no way to tell if they have been cancelled
+  if ctx.id.isNone: return false
+  ctx.isCancelled(ctx.id.unsafeGet())
+
+func cancel*(ctx: Context, id: JsonNode) =
+  ## Cancels an in-progress request.
+  ## Does nothing if there is no request associated with that ID
+  ctx.inProgress.cancel(id)
 
 func fromJsonHook*(request: out Request, data: JsonNode) =
   ## Hook for parsing the JSON
@@ -367,14 +422,20 @@ proc parseArgs(params: SentParameters, args: var tuple) =
   # else:
     # assert false, "Expected either an array of positional params or object of named params"
 
-macro wrapRPC(handler: proc, into: typedesc): proc =
+macro wrapRPC(handler: proc, into: typedesc): RPCFunction =
   ## Wraps a proc so that it matches `into`. Performs the conversion
   ## of the passed JSON into whats expected for the handler
   let tupleVal = handler.createNamedTuple()
   return quote do:
-    proc (params: SentParameters): `into` =
+    proc (inProgress: InProgressRequests, request: Request): `into` =
+      # Create the context
+      let ctx = Context(inProgress: inProgress, id: request.id)
+
+      # Convert the params
       var args = `tupleVal`
-      params.parseArgs(args)
+      request.params.parseArgs(args)
+
+      # Call the request
       when typeof(`handler`.call(args)) is void:
         `handler`.call(args)
         # void returns are treated as null since the `result` member is required
@@ -407,7 +468,7 @@ proc `[]`[R](exec: Executor[R], request: sink Request): ConstructedCall[R] =
 
   let fun = exec.handlers[meth]
   return proc (): Option[R] {.raises: [].}=
-    let response = try: fun(request.params)
+    let response = try: fun(exec.inProgress, request)
                    except Exception as e:
                      let code = if e of RPCError: (ref RPCError)(e).code
                                 else: ServerError
