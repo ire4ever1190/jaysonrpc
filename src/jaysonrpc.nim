@@ -11,19 +11,23 @@ import std/[
   streams,
   asyncdispatch,
   tables,
+  sets
 ]
+
+import pkg/threading/rwlock
 
 ## This is an implementation of the [JSON-RPC protocol](https://www.jsonrpc.org).
 
 runnableExamples:
   import std/sugar # for collect:
 
-  var rpc = Executor[JsonNode]()
+  var rpc = initExecutor[JsonNode]()
+
   rpc.on("hello") do (x: string) -> string:
     return x
 
   # Data then needs to come in as a string
-  let rawJson = $ %* {"jsonrpc": "2.0", "method": "subtract", "params": [42, 23], "id": 1}
+  let rawJson = $ %* {"jsonrpc": "2.0", "method": "hello", "params": ["world"], "id": 1}
   # You get a series of calls from the json
   let calls = rpc.getCalls(rawJson)
   assert calls.len == 1 # This is not a batch call, so we have one call
@@ -38,11 +42,17 @@ runnableExamples:
 # TODO: Some kind of context maybe?
 
 type
+  IDKind = enum
+    ## Different formats an ID can be
+    Numeric ## ID is s
+    String
+    None
+
   ReturnVal = Option[string]
     ## Represents a return value from a call. Optional is used to represent if a response
     ## actually needs to be sent. preprocessed into JSON to avoid and hook issues
 
-  RPCFunction[R] = proc (params: SentParameters): R
+  RPCFunction[R] = proc (inProgress: InProgressRequests, request: Request): R
     ## Function that takes in request parameters and returns `R`.
     ## `R` should be some form of a string, e.g. `Future[string]`, `string`.
     ## This is to enable using different execution schemes
@@ -52,12 +62,22 @@ type
     ## needing the original request.
     ## If this returns `none` then a response shouldn't be sent
 
+  InProgressRequests = ref object
+    ## Tracks in progress requests
+    lock: RwLock
+      ## Lock on the in progress table
+    running {.guard: lock.}: HashSet[JsonNode]
+      ## Table of request ID to whether they have been cancelled or not.
+      ## i.e. if the value is false, then the request has been cancelled by the server.
+      ## It is the request handlers just to check this on a regular basis.
+
   Executor*[R] = object
     ## Executor stores all the functions, this can then be queried later
     ## to get the function to then pass to your favourite executor
     # TODO: Add generic parameter for context
     # Return type is generic to allow for async/sync executors
     handlers: CritBitTree[RPCFunction[R]]
+    inProgress: InProgressRequests
 
   SyncExecutor = Executor[ReturnVal]
     ## Synchronous RPC call executor. Not exactly useful, but I use it for tests
@@ -131,7 +151,7 @@ type
     ## Exception to throw about an error
     code*: RPCErrorCode
       ## Corresponding error code defined in the spec
-    id*: JsonNode
+    id*: Option[JsonNode]
       ## Request that the failure occured in.
       ## "If there was an error in detecting the id in the Request object (e.g. Parse error/Invalid Request), it MUST be Null."
 
@@ -143,6 +163,13 @@ type
     isBatch: bool
       ## Whether the request was batch. Needed to control
       ## how we form the response
+
+  Context* = object
+    inProgress {.cursor.}: InProgressRequests
+      ## Pointer to the executor to get cancellation info
+    id: Option[JsonNode]
+      ## ID of the current request getting executed.
+      ## If its a notification it will be None
 
 const
   InvalidRequest* = RPCErrorCode(-32600)
@@ -156,6 +183,12 @@ const
   ServerError* = RPCErrorCode(-32603)
     ## Error from internal handler
 
+func initInProgress(): InProgressRequests =
+  ## Creates a new in progress object
+  return InProgressRequests(lock: createRwLock())
+
+func initExecutor*[R](): Executor[R] =
+  return Executor[R](inProgress: initInProgress())
 
 proc `%`*(code: RPCErrorCode): JsonNode {.borrow.}
 proc `$`*(code: RPCErrorCode): string {.borrow.}
@@ -173,30 +206,64 @@ func fromJsonHook*(params: out SentParameters, data: JsonNode) =
 func checkedGet*[T](data: JsonNode, key: string, into: typedesc[T]): T =
   ## Performs a checked get to access `key` from `data` and converts into T
   if data.kind != JObject:
-    raise (ref RPCError)(id: newJNull(), code: InvalidRequest, msg: "Invalid Request")
+    raise (ref RPCError)(id: none(JsonNode), code: InvalidRequest, msg: "Invalid Request")
   if key notin data:
-    raise (ref RPCError)(id: newJNull(), code: InvalidRequest, msg: fmt"Missing {key}")
+    raise (ref RPCError)(id: none(JsonNode), code: InvalidRequest, msg: fmt"Missing {key}")
   let val = data[key]
   try:
     return val.to(into)
   except JsonKindError:
-    raise (ref RPCError)(id: newJNull(), code: InvalidRequest, msg: fmt"Expected {$T} for {key} but got {val.kind}")
+    raise (ref RPCError)(id: none(JsonNode), code: InvalidRequest, msg: fmt"Expected {$T} for {key} but got {val.kind}")
 
 func test[T](opt: Option[T], pred: proc (value: T): bool): bool {.inline.} =
   ## Tests the value inside the option. Returns false if option is none
   opt.map(pred).get(false)
+
+func isCancelled(this: InProgressRequests, id: JsonNode): bool =
+  ## Internal function for checking if a request should still be running
+  readWith this.lock:
+    return id notin this.running
+
+func cancel(this: InProgressRequests, id: JsonNode) =
+  ## Cancels a request
+  writeWith this.lock:
+    this.running.excl(id)
+
+func add(this: InProgressRequests, id: JsonNode) =
+  ## Registers a request is running
+  writeWith this.lock:
+    this.running.incl(id)
+
+func isCancelled*(ctx: Context, requestId: JsonNode): bool =
+  ctx.inProgress.isCancelled(requestId)
+
+func isCancelled*(ctx: Context): bool =
+  ## Checks if the current request has been cancelled.
+  # Notifications have no ID so no way to tell if they have been cancelled
+  if ctx.id.isNone: return false
+  ctx.isCancelled(ctx.id.unsafeGet())
+
+func cancel*(ctx: Context, id: JsonNode) =
+  ## Cancels an in-progress request.
+  ## Does nothing if there is no request associated with that ID
+  ctx.inProgress.cancel(id)
+
+func inProgress*(exec: Executor): int =
+  ## Returns the number of requests that are registered to be executed
+  readWith exec.inProgress.lock:
+    return exec.inProgress.running.len
 
 func fromJsonHook*(request: out Request, data: JsonNode) =
   ## Hook for parsing the JSON
   # Perform some validation
   let id = option(data{"id"})
   if id.test(x => x.kind notin {JInt, JString, JNull}):
-    raise (ref RPCError)(id: newJNull(), code: InvalidRequest, msg: "`id` must be one int, string, or null")
+    raise (ref RPCError)(id: none(JsonNode), code: InvalidRequest, msg: "`id` must be one int, string, or null")
 
   # "This member MAY be omitted"
   let params = option(data{"params"})
   if params.test(x => x.kind notin {JArray, JObject}):
-    raise (ref RPCError)(id: id.get(newJNull()), code: InvalidRequest, msg: "Params must be an array/object of arguments")
+    raise (ref RPCError)(id: id, code: InvalidRequest, msg: "Params must be an array/object of arguments")
 
   # Check the rest
 
@@ -276,7 +343,7 @@ func failed(req: Request, exp: RPCError): Response =
   return req.failed(exp.code, exp.msg)
 
 func failed(exp: RPCError): Response =
-  return Request(id: some exp.id).failed(exp)
+  return Request(id: exp.id).failed(exp)
 
 func failed(code: RPCErrorCode, msg: string, data: JsonNode = newJNull()): Response =
   ## Constructs an error. Use this when a valid request is not available
@@ -319,27 +386,45 @@ proc createNamedTuple(prc: NimNode): NimNode =
 
   # Then assign the defaults (TODO)
 
+template argumentKeys(args: tuple): HashSet[string] =
+  ## Returns the keys in the argument tuple that must be parsed.
+  ## This handles getting rid of the [Context] argument
+  var keys = initHashSet[string]()
+  for name, field in args.fieldPairs:
+    when type(field) is not Context:
+      keys.incl(name)
+  keys
+
 proc positionalParams(data: openArray[JsonNode], args: var tuple) =
   ## Parses positional params from the object
 
-  const tupleLen = args.tupleLen
+  const tupleLen = args.argumentKeys().len
   if data.len != tupleLen:
     raise (ref RPCError)(code: InvalidParams, msg: fmt"Expected {tupleLen} parameters but got {data.len}")
 
   # Parse each field
   var i = 0
   for field in args.fields:
-    field.fromJson(data[i])
-    i += 1
+    when type(field) is not Context: # We must skip the context param
+      field.fromJson(data[i])
+      i += 1
 
 proc namedParams(data: OrderedTable[string, JsonNode], args: var tuple, allowedMissing: static seq[string]) =
   ## Parses named params from the object
-  for name, field in args.fieldPairs:
-    if name notin data and name notin allowedMissing:
-      const fieldName = name
-      raise (ref RPCError)(code: InvalidParams, msg: fmt"Missing expected argument: '{fieldName}'")
+  # Check every key in the passed object to ensure there aren't extra keys
+  const allowedKeys =  args.argumentKeys()
 
-    field.fromJson(data[name])
+  for key in data.keys:
+    if key notin allowedKeys:
+      raise (ref RPCError)(code: InvalidParams, msg: fmt"Unknown argument: '{key}'")
+
+  for name, field in args.fieldPairs:
+    when type(field) is not Context: # We must skip the context param
+      if name notin data and name notin allowedMissing:
+        const fieldName = name
+        raise (ref RPCError)(code: InvalidParams, msg: fmt"Missing expected argument: '{fieldName}'")
+
+      field.fromJson(data[name])
 
 macro call*(prc: proc, args: tuple): untyped =
   ## Calls a proc using arguments from `tuple`
@@ -364,23 +449,42 @@ proc parseArgs(params: SentParameters, args: var tuple) =
   of Named:
     namedParams(params.namedParams, args, @["test"])
   of Void: discard
-  # else:
-    # assert false, "Expected either an array of positional params or object of named params"
 
-macro wrapRPC(handler: proc, into: typedesc): proc =
+macro wrapRPC(handler: proc, into: typedesc): RPCFunction =
   ## Wraps a proc so that it matches `into`. Performs the conversion
   ## of the passed JSON into whats expected for the handler
   let tupleVal = handler.createNamedTuple()
   return quote do:
-    proc (params: SentParameters): `into` =
+    proc (inProgress: InProgressRequests, request: Request): `into` =
+      # Create the context
+      let ctx = Context(inProgress: inProgress, id: request.id)
+
+      # Convert the params
       var args = `tupleVal`
-      params.parseArgs(args)
-      when typeof(`handler`.call(args)) is void:
-        `handler`.call(args)
-        # void returns are treated as null since the `result` member is required
-        return newJNull()
-      else:
-        return `handler`.call(args).toJson()
+      try:
+        request.params.parseArgs(args)
+      except RPCError as e:
+        # Attach id
+        e.id = request.id
+        raise
+
+      # See if there is a context param we need to fill in
+      for field in args.fields:
+        when type(field) is Context:
+          field = ctx
+
+      # Call the request
+      try:
+        when typeof(`handler`.call(args)) is void:
+          `handler`.call(args)
+          # void returns are treated as null since the `result` member is required
+          return newJNull()
+        else:
+          return `handler`.call(args).toJson()
+      finally:
+        # Make sure to deregister the call
+        if request.id.isSome():
+          ctx.cancel(request.id.unsafeGet())
 
 proc on*[R](exec: var Executor[R], meth: string, handler: proc) =
   ## Adds a method into the executor. Overwrites a method if it already exists
@@ -407,7 +511,7 @@ proc `[]`[R](exec: Executor[R], request: sink Request): ConstructedCall[R] =
 
   let fun = exec.handlers[meth]
   return proc (): Option[R] {.raises: [].}=
-    let response = try: fun(request.params)
+    let response = try: fun(exec.inProgress, request)
                    except Exception as e:
                      let code = if e of RPCError: (ref RPCError)(e).code
                                 else: ServerError
@@ -459,6 +563,10 @@ proc getCalls*[R](exec: Executor[R], json: string): RPCCalls[R] =
   for data in allData:
     try:
       let request = data.jsonTo(Request)
+      # If its not a notification then register it so it can be cancelled
+      if request.id.isSome():
+        exec.inProgress.add(request.id.unsafeGet())
+
       result.calls &= exec[request]
     except RPCError as e:
       result.calls &= Request(id: none(JsonNode)).constructFail[:R](e.code, e.msg)

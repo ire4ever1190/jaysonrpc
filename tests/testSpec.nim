@@ -4,8 +4,9 @@
 
 import std/[unittest, json, strformat, macros, sugar, options]
 import jaysonrpc
+import ./utils
 
-var rpc = Executor[JsonNode]()
+var rpc = initExecutor[JsonNode]()
 
 rpc.on("subtract") do (minuend, subtrahend: int) -> int:
   return minuend - subtrahend
@@ -31,63 +32,6 @@ rpc.on("void") do ():
   voidCalls += 1
   return
 
-proc strOrNil(x: JsonNode): string =
-  return if x != nil: $x else: ""
-
-proc parseOrNil(x: string): JsonNode =
-  if x == "": nil else: x.parseJson()
-
-# Test case
-
-proc checkJSON(a, b: JsonNode): bool =
-  ## Checks if two JSON objects are the same.
-  ## Ignores field order
-  if a.kind != b.kind: return false
-  case a.kind
-  of JNull: return true
-  of JBool, JInt, JFloat, Jstring, JArray: return a == b
-  of JObject:
-    for field, val in a:
-      if b[field] != val:
-        return false
-    for field, val in b:
-      if a[field] != val:
-        return false
-    return true
-
-template testCase(name: string, body: untyped) {.dirty.} =
-  ## Creates a test case.
-  ## Test case is a series of instructions for whats expected to be sent/recieved.
-  ## Small DSL adds `->` (check send) and `<-` (check response) into the scope. Tests can
-  ## be added on top
-  test name:
-    var resp: Option[string]
-    proc `->`(msg: string) =
-      let calls = rpc.getCalls(msg)
-      let responses = collect:
-        for call in calls:
-          call()
-
-      resp = calls.dump(responses)
-
-    proc `->`(msg: JsonNode) {.used.} =
-      -> $ msg
-
-    proc `<-`(expected: string) =
-      checkPoint $resp
-      checkPoint expected
-      if expected == "":
-        check resp.isNone()
-      else:
-        check resp.isSome()
-        if resp.isNone(): return
-        check checkJson(resp.get().parseJson(), expected.parseJson())
-
-    proc `<-`(expected: JsonNode) {.used.} =
-      <- $ expected
-
-    body
-
 testCase "RPC Call with positional parameters 1":
   -> %* {"jsonrpc": "2.0", "method": "subtract", "params": [42, 23], "id": 1}
   <- %* {"id": 1, "jsonrpc": "2.0", "result": 19}
@@ -96,13 +40,18 @@ testCase "RPC Call with positional parameters 2":
   -> %* {"jsonrpc": "2.0", "method": "subtract", "params": [23, 42], "id": 2}
   <- %* {"id": 2, "jsonrpc": "2.0", "result": -19}
 
-testCase "RPC Call with named parameters 1":
-  -> %* {"jsonrpc": "2.0", "method": "subtract", "params": {"subtrahend": 23, "minuend": 42}, "id": 3}
-  <- %* {"id": 3, "jsonrpc": "2.0", "result": 19}
+suite "RPC Call with named parameters":
+  testCase "Check args in normal order":
+    -> %* {"jsonrpc": "2.0", "method": "subtract", "params": {"subtrahend": 23, "minuend": 42}, "id": 3}
+    <- %* {"id": 3, "jsonrpc": "2.0", "result": 19}
 
-testCase "RPC call with named parameters 2":
-  -> %* {"jsonrpc": "2.0", "method": "subtract", "params": {"minuend": 42, "subtrahend": 23}, "id": 4}
-  <- %* {"id": 4, "jsonrpc": "2.0", "result": 19}
+  testCase "Check args in different order":
+    -> %* {"jsonrpc": "2.0", "method": "subtract", "params": {"minuend": 42, "subtrahend": 23}, "id": 4}
+    <- %* {"id": 4, "jsonrpc": "2.0", "result": 19}
+
+  testCase "Can't pass unknown args":
+    -> %* {"jsonrpc": "2.0", "method": "subtract", "params": {"minuend": 42, "subtrahend": 23, "foo": 1}, "id": 4}
+    <- %* {"id": 4, "jsonrpc": "2.0", "error": {"code": InvalidParams, "message": "Unknown argument: 'foo'"}}
 
 testCase "RPC with with no parameters":
   -> %* {"jsonrpc": "2.0", "method": "no_args", "id": 4}
@@ -123,7 +72,7 @@ testCase "RPC call with invalid JSON":
   <- %* {"jsonrpc": "2.0", "error": {"code": -32700, "message": "Failed to parse JSON"}, "id": nil}
 
 testCase "RPC call with invalid request object":
-  -> %* {"jsonrpc": "2.0", "method": 1, "params": "bar"}
+  -> %* {"jsonrpc": "2.0", "method": 1, "params": "bar", "id": 1}
   <- %* {"id": nil, "jsonrpc": "2.0", "error": {"code": -32600, "message": "Params must be an array/object of arguments"}}
 
 testCase "RPC call batch, invalid JSON":
