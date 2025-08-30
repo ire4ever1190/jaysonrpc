@@ -4,6 +4,7 @@
 
 import std/[unittest, json, strformat, macros, sugar, options]
 import jaysonrpc
+import ./utils
 
 var rpc = Executor[JsonNode]()
 
@@ -30,63 +31,6 @@ rpc.on("void") do ():
   # Have some side effect to ensure we know this is getting called
   voidCalls += 1
   return
-
-proc strOrNil(x: JsonNode): string =
-  return if x != nil: $x else: ""
-
-proc parseOrNil(x: string): JsonNode =
-  if x == "": nil else: x.parseJson()
-
-# Test case
-
-proc checkJSON(a, b: JsonNode): bool =
-  ## Checks if two JSON objects are the same.
-  ## Ignores field order
-  if a.kind != b.kind: return false
-  case a.kind
-  of JNull: return true
-  of JBool, JInt, JFloat, Jstring, JArray: return a == b
-  of JObject:
-    for field, val in a:
-      if b[field] != val:
-        return false
-    for field, val in b:
-      if a[field] != val:
-        return false
-    return true
-
-template testCase(name: string, body: untyped) {.dirty.} =
-  ## Creates a test case.
-  ## Test case is a series of instructions for whats expected to be sent/recieved.
-  ## Small DSL adds `->` (check send) and `<-` (check response) into the scope. Tests can
-  ## be added on top
-  test name:
-    var resp: Option[string]
-    proc `->`(msg: string) =
-      let calls = rpc.getCalls(msg)
-      let responses = collect:
-        for call in calls:
-          call()
-
-      resp = calls.dump(responses)
-
-    proc `->`(msg: JsonNode) {.used.} =
-      -> $ msg
-
-    proc `<-`(expected: string) =
-      checkPoint $resp
-      checkPoint expected
-      if expected == "":
-        check resp.isNone()
-      else:
-        check resp.isSome()
-        if resp.isNone(): return
-        check checkJson(resp.get().parseJson(), expected.parseJson())
-
-    proc `<-`(expected: JsonNode) {.used.} =
-      <- $ expected
-
-    body
 
 testCase "RPC Call with positional parameters 1":
   -> %* {"jsonrpc": "2.0", "method": "subtract", "params": [42, 23], "id": 1}

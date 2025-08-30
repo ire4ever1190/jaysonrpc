@@ -21,7 +21,8 @@ import pkg/threading/rwlock
 runnableExamples:
   import std/sugar # for collect:
 
-  var rpc = Executor[JsonNode]()
+  var rpc = initExecutor[JsonNode]()
+
   rpc.on("hello") do (x: string) -> string:
     return x
 
@@ -63,9 +64,9 @@ type
 
   InProgressRequests = ref object
     ## Tracks in progress requests
-    inProgressLock: RwLock
+    lock: RwLock
       ## Lock on the in progress table
-    inProgress {.guard: inProgressLock.}: HashSet[JsonNode]
+    running {.guard: lock.}: HashSet[JsonNode]
       ## Table of request ID to whether they have been cancelled or not.
       ## i.e. if the value is false, then the request has been cancelled by the server.
       ## It is the request handlers just to check this on a regular basis.
@@ -182,6 +183,12 @@ const
   ServerError* = RPCErrorCode(-32603)
     ## Error from internal handler
 
+func initInProgress(): InProgressRequests =
+  ## Creates a new in progress object
+  return InProgressRequests(lock: createRwLock())
+
+func initExecutor*[R](): Executor[R] =
+  return Executor[R](inProgress: initInProgress())
 
 proc `%`*(code: RPCErrorCode): JsonNode {.borrow.}
 proc `$`*(code: RPCErrorCode): string {.borrow.}
@@ -214,18 +221,18 @@ func test[T](opt: Option[T], pred: proc (value: T): bool): bool {.inline.} =
 
 func isCancelled(this: InProgressRequests, id: JsonNode): bool =
   ## Internal function for checking if a request should still be running
-  readWith this.inProgressLock:
-    return id in this.inProgress
+  readWith this.lock:
+    return id in this.running
 
 func cancel(this: InProgressRequests, id: JsonNode) =
   ## Cancels a request
-  writeWith this.inProgressLock:
-    this.inProgress.excl(id)
+  writeWith this.lock:
+    this.running.excl(id)
 
 func add(this: InProgressRequests, id: JsonNode) =
   ## Registers a request is running
-  writeWith this.inProgressLock:
-    this.inProgress.incl(id)
+  writeWith this.lock:
+    this.running.incl(id)
 
 func isCancelled*(ctx: Context, requestId: JsonNode): bool =
   ctx.inProgress.isCancelled(requestId)
@@ -384,17 +391,19 @@ proc positionalParams(data: openArray[JsonNode], args: var tuple) =
   # Parse each field
   var i = 0
   for field in args.fields:
-    field.fromJson(data[i])
-    i += 1
+    when type(field) is not Context: # We must skip the context param
+      field.fromJson(data[i])
+      i += 1
 
 proc namedParams(data: OrderedTable[string, JsonNode], args: var tuple, allowedMissing: static seq[string]) =
   ## Parses named params from the object
   for name, field in args.fieldPairs:
-    if name notin data and name notin allowedMissing:
-      const fieldName = name
-      raise (ref RPCError)(code: InvalidParams, msg: fmt"Missing expected argument: '{fieldName}'")
+    when type(field) is not Context: # We must skip the context param
+      if name notin data and name notin allowedMissing:
+        const fieldName = name
+        raise (ref RPCError)(code: InvalidParams, msg: fmt"Missing expected argument: '{fieldName}'")
 
-    field.fromJson(data[name])
+      field.fromJson(data[name])
 
 macro call*(prc: proc, args: tuple): untyped =
   ## Calls a proc using arguments from `tuple`
@@ -419,8 +428,6 @@ proc parseArgs(params: SentParameters, args: var tuple) =
   of Named:
     namedParams(params.namedParams, args, @["test"])
   of Void: discard
-  # else:
-    # assert false, "Expected either an array of positional params or object of named params"
 
 macro wrapRPC(handler: proc, into: typedesc): RPCFunction =
   ## Wraps a proc so that it matches `into`. Performs the conversion
@@ -434,6 +441,10 @@ macro wrapRPC(handler: proc, into: typedesc): RPCFunction =
       # Convert the params
       var args = `tupleVal`
       request.params.parseArgs(args)
+      # See if there is a context param we need to fill in
+      for field in args.fields:
+        when type(field) is Context:
+          field = ctx
 
       # Call the request
       when typeof(`handler`.call(args)) is void:
