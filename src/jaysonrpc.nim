@@ -222,7 +222,7 @@ func test[T](opt: Option[T], pred: proc (value: T): bool): bool {.inline.} =
 func isCancelled(this: InProgressRequests, id: JsonNode): bool =
   ## Internal function for checking if a request should still be running
   readWith this.lock:
-    return id in this.running
+    return id notin this.running
 
 func cancel(this: InProgressRequests, id: JsonNode) =
   ## Cancels a request
@@ -247,6 +247,11 @@ func cancel*(ctx: Context, id: JsonNode) =
   ## Cancels an in-progress request.
   ## Does nothing if there is no request associated with that ID
   ctx.inProgress.cancel(id)
+
+func inProgress*(exec: Executor): int =
+  ## Returns the number of requests that are registered to be executed
+  readWith exec.inProgress.lock:
+    return exec.inProgress.running.len
 
 func fromJsonHook*(request: out Request, data: JsonNode) =
   ## Hook for parsing the JSON
@@ -447,12 +452,17 @@ macro wrapRPC(handler: proc, into: typedesc): RPCFunction =
           field = ctx
 
       # Call the request
-      when typeof(`handler`.call(args)) is void:
-        `handler`.call(args)
-        # void returns are treated as null since the `result` member is required
-        return newJNull()
-      else:
-        return `handler`.call(args).toJson()
+      try:
+        when typeof(`handler`.call(args)) is void:
+          `handler`.call(args)
+          # void returns are treated as null since the `result` member is required
+          return newJNull()
+        else:
+          return `handler`.call(args).toJson()
+      finally:
+        # Make sure to deregister the call
+        if request.id.isSome():
+          ctx.cancel(request.id.unsafeGet())
 
 proc on*[R](exec: var Executor[R], meth: string, handler: proc) =
   ## Adds a method into the executor. Overwrites a method if it already exists
@@ -531,6 +541,10 @@ proc getCalls*[R](exec: Executor[R], json: string): RPCCalls[R] =
   for data in allData:
     try:
       let request = data.jsonTo(Request)
+      # If its not a notification then register it so it can be cancelled
+      if request.id.isSome():
+        exec.inProgress.add(request.id.unsafeGet())
+
       result.calls &= exec[request]
     except RPCError as e:
       result.calls &= Request(id: none(JsonNode)).constructFail[:R](e.code, e.msg)

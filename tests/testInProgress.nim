@@ -15,17 +15,42 @@ rpc.on("someFunc") do (ctx: Context) -> bool:
   return ctx.isCancelled()
 
 testCase "Test not cancelled by default":
+  check rpc.inProgress() == 0
   -> %* {"jsonrpc": "2.0", "method": "someFunc", "id": 4}
   <- %* {"id": 4, "jsonrpc": "2.0", "result": false}
+  check rpc.inProgress() == 0
 
-testCase "Function is registered when parsed":
+suite "Context is not included in parameter count":
+  testCase "Positional args":
+    -> %* {"jsonrpc": "2.0", "method": "cancel", "params": [1], "id": 2}
+    <- %* {"id": 2, "jsonrpc": "2.0", "result": nil}
+
+  testCase "Named args":
+    -> %* {"jsonrpc": "2.0", "method": "cancel", "params": {"id": 1}, "id": 2}
+    <- %* {"id": 2, "jsonrpc": "2.0", "result": nil}
+
+  testCase "Can't pass context as arg":
+    -> %* {"jsonrpc": "2.0", "method": "cancel", "params": {"id": 1, "context": {}}, "id": 2}
+    <- %* {"id": 2, "jsonrpc": "2.0", "result": nil}
+
+testCase "Nothing gets registered for notifications":
+  let calls = rpc.getCalls($ %* {"jsonrpc": "2.0", "method": "someFunc"})
+  check rpc.inProgress == 0
+
+testCase "Check function is registered in the inProgress asap":
   let calls = rpc.getCalls($ %* {"jsonrpc": "2.0", "method": "someFunc", "id": 1})
+  check rpc.inProgress() == 1
   # Don't call just yet, but call a cancellation
   -> %* {"jsonrpc": "2.0", "method": "cancel", "params": [1], "id": 2}
+  <- %* {"id": 2, "jsonrpc": "2.0", "result": nil}
+  check rpc.inProgress() == 1
+
   # Now the call should know that is has been cancelled
   let responses = collect:
     for call in calls:
       call()
+  # All calls should be finished
+  check rpc.inProgress == 0
 
   resp = calls.dump(responses)
   check resp.get().parseJson()["result"].bval

@@ -40,13 +40,18 @@ testCase "RPC Call with positional parameters 2":
   -> %* {"jsonrpc": "2.0", "method": "subtract", "params": [23, 42], "id": 2}
   <- %* {"id": 2, "jsonrpc": "2.0", "result": -19}
 
-testCase "RPC Call with named parameters 1":
-  -> %* {"jsonrpc": "2.0", "method": "subtract", "params": {"subtrahend": 23, "minuend": 42}, "id": 3}
-  <- %* {"id": 3, "jsonrpc": "2.0", "result": 19}
+suite "RPC Call with named parameters":
+  testCase "Check args in normal order":
+    -> %* {"jsonrpc": "2.0", "method": "subtract", "params": {"subtrahend": 23, "minuend": 42}, "id": 3}
+    <- %* {"id": 3, "jsonrpc": "2.0", "result": 19}
 
-testCase "RPC call with named parameters 2":
-  -> %* {"jsonrpc": "2.0", "method": "subtract", "params": {"minuend": 42, "subtrahend": 23}, "id": 4}
-  <- %* {"id": 4, "jsonrpc": "2.0", "result": 19}
+  testCase "Check args in different order":
+    -> %* {"jsonrpc": "2.0", "method": "subtract", "params": {"minuend": 42, "subtrahend": 23}, "id": 4}
+    <- %* {"id": 4, "jsonrpc": "2.0", "result": 19}
+
+  testCase "Can't pass unknown args":
+    -> %* {"jsonrpc": "2.0", "method": "subtract", "params": {"minuend": 42, "subtrahend": 23, "foo": 1}, "id": 4}
+    <- %* {"id": nil, "jsonrpc": "2.0", "error": {"code": -32600, "message": "Unknown argument 'foo'"}}
 
 testCase "RPC with with no parameters":
   -> %* {"jsonrpc": "2.0", "method": "no_args", "id": 4}
