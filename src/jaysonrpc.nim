@@ -386,10 +386,19 @@ proc createNamedTuple(prc: NimNode): NimNode =
 
   # Then assign the defaults (TODO)
 
+template argumentKeys(args: tuple): HashSet[string] =
+  ## Returns the keys in the argument tuple that must be parsed.
+  ## This handles getting rid of the [Context] argument
+  var keys = initHashSet[string]()
+  for name, field in args.fieldPairs:
+    when type(field) is not Context:
+      keys.incl(name)
+  keys
+
 proc positionalParams(data: openArray[JsonNode], args: var tuple) =
   ## Parses positional params from the object
 
-  const tupleLen = args.tupleLen
+  const tupleLen = args.argumentKeys().len
   if data.len != tupleLen:
     raise (ref RPCError)(code: InvalidParams, msg: fmt"Expected {tupleLen} parameters but got {data.len}")
 
@@ -403,11 +412,8 @@ proc positionalParams(data: openArray[JsonNode], args: var tuple) =
 proc namedParams(data: OrderedTable[string, JsonNode], args: var tuple, allowedMissing: static seq[string]) =
   ## Parses named params from the object
   # Check every key in the passed object to ensure there aren't extra keys
-  const allowedKeys = block:
-    var allowed = initHashSet[string]()
-    for name, _ in args.fieldPairs:
-      allowed.incl(name)
-    allowed
+  const allowedKeys =  args.argumentKeys()
+
   for key in data.keys:
     if key notin allowedKeys:
       raise (ref RPCError)(code: InvalidParams, msg: fmt"Unknown argument: '{key}'")

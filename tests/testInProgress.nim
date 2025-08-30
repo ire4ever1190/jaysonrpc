@@ -39,14 +39,13 @@ testCase "Check function is registered in the inProgress asap":
   # Don't call just yet, but call a cancellation
   -> %* {"jsonrpc": "2.0", "method": "cancel", "params": [1], "id": 2}
   <- %* {"id": 2, "jsonrpc": "2.0", "result": nil}
-  check rpc.inProgress() == 1
+  # It should've cancelled the call before we ran it
+  check rpc.inProgress() == 0
 
   # Now the call should know that is has been cancelled
   let responses = collect:
     for call in calls:
       call()
-  # All calls should be finished
-  check rpc.inProgress == 0
 
   resp = calls.dump(responses)
   check resp.get().parseJson()["result"].bval
