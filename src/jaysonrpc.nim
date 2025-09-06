@@ -84,12 +84,11 @@ type
 
   AsyncExecutor = Executor[Future[ReturnVal]]
 
-  MethodDef[T: proc] = object
+  MethodDef*[T: proc] = object
     ## This is a definition of a method. Used to enforce a spec
     ## or for calling a pre-defined method.
     ## This has the benefit of being able to share defintions between server and client
-    ## for type safe calling (don't worry, we have helpers)
-    name: string
+    name*: string ## Name of the method getting called
 
   ID* = distinct JsonNode
     ## ID of a request
@@ -438,6 +437,39 @@ macro call*(prc: proc, args: tuple): untyped =
       "Tuple must be made of named arguments".error(arg)
     result &= nnkDotExpr.newTree(args, ident arg[0].strVal)
 
+func formCall(name: string, id: Option[int] | Option[string], args: openArray[(string, JsonNode)] = []): JsonNode =
+  ## Low level proc for forming JSON RPC call/notification objects.
+  ## Currently just supports named parameters
+  result = %* {
+    "jsonrpc": "2.0",
+    "method": name
+  }
+  # Add ID if provided
+  if id.isSome():
+    result["id"] = % id.get()
+
+  # Add params if provided
+  if args.len > 0:
+    let params = newJObject()
+    for (name, value) in args:
+      params[name] = value
+    result["params"] = params
+
+proc formTypedCall(def: NimNode, id: NimNode, args: NimNode): NimNode =
+  ## Internal proc for forming a call from typed info.
+  echo args.treeRepr
+  let
+    name = nnkDotExpr.newTree(def, ident"name")
+    callCreation = newCall(bindSym"formCall", name, id)
+  return newCall(ident"$", callCreation)
+
+macro call*(def: MethodDef, id: int | string, args: varargs[untyped]): string =
+  ## Creates a call with associated ID that is expecting a response
+  formTypedCall(def, newCall(bindSym"some", id), args)
+
+macro notify*(def: MethodDef, args: varargs[untyped]): string =
+  ## Creates a notification that doesn't expect a response
+  formTypedCall(def, newCall(nnkBracketExpr.newTree(bindSym"none", ident"int")), args)
 
 proc parseArgs(params: SentParameters, args: var tuple) =
   ## Parses the arguments from `params` into `args`. Handles
@@ -574,3 +606,4 @@ proc getCalls*[R](exec: Executor[R], json: string): RPCCalls[R] =
 
 export critbits
 export json
+export options
