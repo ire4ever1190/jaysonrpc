@@ -60,7 +60,7 @@ type
     ## This is to enable using different execution schemes
 
   ConstructedCallProc[R] = proc (): Option[R] {.closure, raises: [].}
-  ConstructedCall[R] = object
+  ConstructedCall*[R] = object
     ## Call that has parameters applied, can then be called without
     ## needing the original request.
     ## If this returns `none` then a response shouldn't be sent
