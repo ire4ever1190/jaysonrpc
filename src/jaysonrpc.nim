@@ -11,7 +11,11 @@ import std/[
   streams,
   asyncdispatch,
   tables,
-  sets
+  sets,
+  enumerate,
+  genasts,
+  macrocache,
+  sequtils
 ]
 
 import pkg/threading/rwlock
@@ -84,10 +88,12 @@ type
 
   AsyncExecutor = Executor[Future[ReturnVal]]
 
-  MethodDef*[T: proc] = object
+  MethodDef*[A: tuple, R] = object
     ## This is a definition of a method. Used to enforce a spec
     ## or for calling a pre-defined method.
-    ## This has the benefit of being able to share defintions between server and client
+    ## This has the benefit of being able to share defintions between server and client.
+    ## - `A` tuple representing the args to send
+    ##
     name*: string ## Name of the method getting called
 
   ID* = distinct JsonNode
@@ -142,6 +148,13 @@ type
       error*: Error
         ## Error that occured from the call
 
+  TypedRequest*[R] = distinct Request
+    ## [Request] but has type info associated on what the expected return type is.
+    ## Used when sending a call to a remote server
+
+  Notification = distinct Request
+    ## Like [TypedRequest] but signifies this is a notification
+
   RPCErrorCode* = distinct int
     ## Error codes for JSONRPC. Stored as distinct int instead of enum
     ## so that it can be extended
@@ -189,6 +202,44 @@ func initInProgress(): InProgressRequests =
 func initExecutor*[R](): Executor[R] =
   return Executor[R](inProgress: initInProgress())
 
+const uniqueId = CacheCounter"jayson.id"
+template nextID(): int =
+  ## Returns a unique ID
+  static: uniqueId.inc()
+  const val = uniqueId.value()
+  val
+
+proc findParmeters(x: NimNode): NimNode =
+  ## Finds the parameters node
+  case x.kind
+  of nnkProcTy: x[0]
+  of nnkFormalParams: x
+  else: raise (ref ValueError)(msg: fmt"Can't find the parameter node for {x.kind}")
+
+iterator parameters(x: NimNode): NimNode =
+  ## Returns all the parameters for a proc. Doesn't return the return type
+  ## This flattens the identDefs so the case of `a, b: int` can be ignored
+  x.expectKind({nnkProcTy, nnkFormalParams})
+
+  let parameters = x.findParmeters()
+
+  for i in 1 ..< parameters.len:
+    let identDef = x[i]
+    if identDef.len == 3:
+      # Simple case of `a: int`, we can return it
+      yield identDef
+    else:
+      for paramIdx in 0 ..< (identDef.len - 2):
+        # Return new identDef, keeping the same line info for each
+        let newIdentDef = nnkIdentDefs.newTree(
+          identDef[paramIdx], # name
+          identDef[^2], # type
+          identDef[^1] # default
+        )
+        newIdentDef.copyLineInfo(identDef)
+        yield newIdentDef
+
+
 proc `%`*(code: RPCErrorCode): JsonNode {.borrow.}
 proc `$`*(code: RPCErrorCode): string {.borrow.}
 func `==`*(a, b: RPCErrorCode): bool {.borrow.}
@@ -223,6 +274,11 @@ func isCancelled(this: InProgressRequests, id: JsonNode): bool =
   readWith this.lock:
     return id notin this.running
 
+func cancel(this: InProgressRequests, ids: HashSet[JsonNode]) =
+  ## Cancels a series of requests
+  writeWith this.lock:
+    this.running.excl(ids)
+
 func cancel(this: InProgressRequests, id: JsonNode) =
   ## Cancels a request
   writeWith this.lock:
@@ -246,6 +302,11 @@ func cancel*(ctx: Context, id: JsonNode) =
   ## Cancels an in-progress request.
   ## Does nothing if there is no request associated with that ID
   ctx.inProgress.cancel(id)
+
+func shutdown*(exec: Executor) =
+  ## Shutdowns the executor by cancelling all in progress requests
+  writeWith exec.inProgress.lock:
+    exec.inProgress.clear()
 
 func inProgress*(exec: Executor): int =
   ## Returns the number of requests that are registered to be executed
@@ -273,10 +334,26 @@ func fromJsonHook*(request: out Request, data: JsonNode) =
       params: params.map(x => x.jsonTo(SentParameters)).get(SentParameters(kind: Void))
   )
 
+func toJsonHook*(parameters: SentParameters): JsonNode =
+  case parameters.kind
+  of Void:
+    result = newJObject()
+  of Named:
+    result = newJObject()
+    result.fields = parameters.namedParams
+  of Positional:
+    result = newJArray()
+    result.elems = parameters.positionalParams
+
 func toJsonHook*(request: sink Request): JsonNode =
-  result = %request
-  result["method"] = result["meth"]
-  result.delete("meth")
+  result = %* {
+    "jsonrpc": "2.0",
+    "method": request.meth,
+  }
+  if request.params.kind != Void:
+    result["params"] = request.params.toJson()
+  if request.id.isSome():
+    result["id"] = request.id.get()
 
 func fromJsonHook*(response: out Response, data: JsonNode) =
   response = Response(id: data["id"], passed: "result" in data)
@@ -366,19 +443,25 @@ proc passed(req: Request, res: sink JsonNode): Response =
     result: res
   )
 
+iterator procArgs(prc: NimNode): (string, NimNode, NimNode) =
+  ## Returns all the fields inside a proc.
+  ## Must be passed the actual proc type implementation
+  assert prc.kind == nnkProcTy, "Must be a proc type passed"
+  let params = prc[0]
+  for i in 1 ..< params.len:
+    yield (params[i][0].strVal, params[i][1], params[i][2])
+
 proc createNamedTuple(prc: NimNode): NimNode =
   ## Takes in the NimNode for a proc type and returns a named tuple to
   ## parse the parameters.
   ## Tuple has default values set
-  let
-    typ = prc.getTypeImpl()
-    params = typ[0][1 .. ^1]
+  let typ = prc.getTypeImpl()
   # First we need to construct the type
   let tupleType = nnkTupleTy.newTree()
-  for param in params:
-    # We need to desym the params
-    tupleType &= newIdentDefs(ident param[0].strVal, param[1])
 
+  # Add all the args
+  for (name, param, _) in typ.procArgs():
+    tupleType &= newIdentDefs(ident name, param)
 
   # Then construct it
   return newCall("default", tupleType)
@@ -437,39 +520,49 @@ macro call*(prc: proc, args: tuple): untyped =
       "Tuple must be made of named arguments".error(arg)
     result &= nnkDotExpr.newTree(args, ident arg[0].strVal)
 
-func formCall(name: string, id: Option[int] | Option[string], args: openArray[(string, JsonNode)] = []): JsonNode =
-  ## Low level proc for forming JSON RPC call/notification objects.
+func formCall(name: string, args: openArray[(string, JsonNode)] = []): Request =
+  ## Low level proc for forming JSON RPC call objects. Making it be a call/notification is left up to when calling
   ## Currently just supports named parameters
-  result = %* {
-    "jsonrpc": "2.0",
-    "method": name
-  }
-  # Add ID if provided
-  if id.isSome():
-    result["id"] = % id.get()
+  runnableExamples:
+    let fooCall = formCall("foo", {"someArg": %1})
+  #==#
+  result = default(Request)
+  # Only assign the name, ID will be assigned later when calling/notifying.
+  #
+  result.meth = name
 
   # Add params if provided
   if args.len > 0:
-    let params = newJObject()
+    var params = initOrderedTable[string, JsonNode](args.len)
     for (name, value) in args:
       params[name] = value
-    result["params"] = params
+    result.params = SentParameters(kind: Named, namedParams: params)
 
-proc formTypedCall(def: NimNode, id: NimNode, args: NimNode): NimNode =
-  ## Internal proc for forming a call from typed info.
-  echo args.treeRepr
-  let
-    name = nnkDotExpr.newTree(def, ident"name")
-    callCreation = newCall(bindSym"formCall", name, id)
-  return newCall(ident"$", callCreation)
 
-macro call*(def: MethodDef, id: int | string, args: varargs[untyped]): string =
-  ## Creates a call with associated ID that is expecting a response
-  formTypedCall(def, newCall(bindSym"some", id), args)
+proc call*[A, R](def: MethodDef[A, R], args: A): TypedRequest[R] {.inline.} =
+  ## Returns the proc for calling a method
+  var argsArr: array[tupleLen(args), (string, JsonNode)]
+  var idx = 0
+  for key, val in fieldPairs(args):
+    argsArr[idx] = (key, val.toJson())
+    idx += 1
+  return TypedRequest[R](formCall(def.name, argsArr))
 
-macro notify*(def: MethodDef, args: varargs[untyped]): string =
-  ## Creates a notification that doesn't expect a response
-  formTypedCall(def, newCall(nnkBracketExpr.newTree(bindSym"none", ident"int")), args)
+proc notify*[A, R](def: MethodDef[A, R], args: A): Notification {.inline.} =
+  ## Creates a notification call that can be sent
+  Notification(Request(def.call(args)))
+
+macro createNotifyProc(args: typedesc, returnType: typedesc): untyped =
+  ## Creates a proc that returns [TypedResponse] like it calling a notification
+  echo $args
+  echo $returnType
+
+proc extractType(x: NimNode): NimNode =
+  ## Extracts the type that is hidden in a typedesc
+  case x.kind
+  of nnkBracketExpr: x[1]
+  of nnkProcTy: x
+  else: raise (ref ValueError)(msg: "Unknown type")
 
 proc parseArgs(params: SentParameters, args: var tuple) =
   ## Parses the arguments from `params` into `args`. Handles
@@ -521,11 +614,6 @@ macro wrapRPC(handler: proc, into: typedesc): RPCFunction =
 proc on*[R](exec: var Executor[R], meth: string, handler: proc) =
   ## Adds a method into the executor. Overwrites a method if it already exists
   exec.handlers[meth] = wrapRPC(handler, R)
-
-proc on*[T](exec: var Executor, def: MethodDef[T], handler: T) =
-  ## Adds a method into the executor. Enforces the method implements a
-  ## a signature
-  exec.add(def.name, handler)
 
 proc constructFail[R](req: Request, code: RPCErrorCode, msg: string): ConstructedCall[R] =
   return proc (): Option[R] {.raises: [].} =
