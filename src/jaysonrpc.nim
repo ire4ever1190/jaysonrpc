@@ -12,7 +12,8 @@ import std/[
   tables,
   sets,
   macrocache,
-  sequtils
+  sequtils,
+  logging
 ]
 
 import pkg/threading/rwlock
@@ -624,6 +625,7 @@ proc `[]`[R](exec: Executor[R], request: sink Request): ConstructedCall[R] =
   ## Gets the handler from the executor in a way that keeps reference to the request
   let meth = request.meth
   if meth notin exec.handlers:
+    logging.error(fmt"Unknown method '{meth}' call attemtped")
     return request.constructFail[:R](MethodNotFound, fmt"Method not found: '{meth}'")
 
   let fun = exec.handlers[meth]
@@ -635,6 +637,7 @@ proc `[]`[R](exec: Executor[R], request: sink Request): ConstructedCall[R] =
                       let code = if e of RPCError: (ref RPCError)(e).code
                                   else: ServerError
                       {.cast(raises: []).}:
+                        logging.error(fmt"Failed to execute {meth} with exception {e.name}: {e.msg}")
                         let val = some(request.failed(code, e.msg).toJson())
                       return val
       # If it doesn't have an ID, it doesn't get a response
@@ -667,6 +670,7 @@ proc getCalls*[R](exec: Executor[R], json: string): RPCCalls[R] =
       # Either way, we just represent it as a batch call
       json.parseJson()
     except JsonParsingError:
+      logging.error("Invalid JSON recieved")
       return initCalls(@[Request(id: none(JsonNode)).constructFail[:R](ParseError, "Failed to parse JSON")], false)
 
   if data.kind notin {JObject, JArray}:
