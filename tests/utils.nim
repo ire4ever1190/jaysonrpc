@@ -16,6 +16,10 @@ proc checkJSON*(a, b: JsonNode): bool =
         return false
     return true
 
+proc checkJSON*(a, b: string): bool =
+  ## Checks two json strings (parses them first)
+  checkJSON(a.parseJson(), b.parseJson())
+
 proc strOrNil*(x: JsonNode): string =
   return if x != nil: $x else: ""
 
