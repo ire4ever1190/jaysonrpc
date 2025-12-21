@@ -8,12 +8,9 @@ import std/[
   macros,
   wrapnils,
   sugar,
-  streams,
   asyncdispatch,
   tables,
   sets,
-  enumerate,
-  genasts,
   macrocache,
   sequtils
 ]
@@ -201,13 +198,6 @@ func initInProgress(): InProgressRequests =
 
 func initExecutor*[R](): Executor[R] =
   return Executor[R](inProgress: initInProgress())
-
-const uniqueId = CacheCounter"jayson.id"
-template nextID(): int =
-  ## Returns a unique ID
-  static: uniqueId.inc()
-  const val = uniqueId.value()
-  val
 
 proc findParmeters(x: NimNode): NimNode =
   ## Finds the parameters node
@@ -551,18 +541,6 @@ proc call*[A, R](def: MethodDef[A, R], args: A): TypedRequest[R] {.inline.} =
 proc notify*[A, R](def: MethodDef[A, R], args: A): Notification {.inline.} =
   ## Creates a notification call that can be sent
   Notification(Request(def.call(args)))
-
-macro createNotifyProc(args: typedesc, returnType: typedesc): untyped =
-  ## Creates a proc that returns [TypedResponse] like it calling a notification
-  echo $args
-  echo $returnType
-
-proc extractType(x: NimNode): NimNode =
-  ## Extracts the type that is hidden in a typedesc
-  case x.kind
-  of nnkBracketExpr: x[1]
-  of nnkProcTy: x
-  else: raise (ref ValueError)(msg: "Unknown type")
 
 proc parseArgs(params: SentParameters, args: var tuple) =
   ## Parses the arguments from `params` into `args`. Handles
