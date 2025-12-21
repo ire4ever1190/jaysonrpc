@@ -12,7 +12,8 @@ import std/[
   tables,
   sets,
   macrocache,
-  sequtils
+  sequtils,
+  logging
 ]
 
 import pkg/threading/rwlock
@@ -58,10 +59,13 @@ type
     ## `R` should be some form of a string, e.g. `Future[string]`, `string`.
     ## This is to enable using different execution schemes
 
-  ConstructedCall[R] = proc (): Option[R] {.closure, raises: [].}
+  ConstructedCallProc[R] = proc (): Option[R] {.closure, raises: [].}
+  ConstructedCall[R] = object
     ## Call that has parameters applied, can then be called without
     ## needing the original request.
     ## If this returns `none` then a response shouldn't be sent
+    fun: ConstructedCallProc[R]
+    name: string
 
   InProgressRequests = ref object
     ## Tracks in progress requests
@@ -593,37 +597,57 @@ proc on*[R](exec: var Executor[R], meth: string, handler: proc) =
   ## Adds a method into the executor. Overwrites a method if it already exists
   exec.handlers[meth] = wrapRPC(handler, R)
 
+func name*(call: ConstructedCall): string =
+  ## Returns the method that a constructed call handles
+  return call.name
+
+func call*[R](call: ConstructedCall[R]): ConstructedCallProc[R] =
+  ## Returns the proc that you call to get the response
+  return call.fun
+
+{.experimental: "callOperator".}
+func `()`*[R](call: ConstructedCall[R]): Option[R] =
+  ## Helper function that calls the internal proc
+  call.fun()
+
 proc constructFail[R](req: Request, code: RPCErrorCode, msg: string): ConstructedCall[R] =
-  return proc (): Option[R] {.raises: [].} =
+  let fun = proc (): Option[R] {.raises: [].} =
     {.cast(raises: []).}:
       if req.isNotification and code notin [ParseError, InvalidRequest]:
         return none(JsonNode)
       return some(req.failed(code, msg).toJson())
-
+  return ConstructedCall[R](
+    name: req.meth,
+    fun: fun
+  )
 
 proc `[]`[R](exec: Executor[R], request: sink Request): ConstructedCall[R] =
   ## Gets the handler from the executor in a way that keeps reference to the request
   let meth = request.meth
   if meth notin exec.handlers:
+    logging.error(fmt"Unknown method '{meth}' call attemtped")
     return request.constructFail[:R](MethodNotFound, fmt"Method not found: '{meth}'")
 
   let fun = exec.handlers[meth]
-  return proc (): Option[R] {.raises: [].}=
-    let response = try: fun(exec.inProgress, request)
-                   except Exception as e:
-                     let code = if e of RPCError: (ref RPCError)(e).code
-                                else: ServerError
-                     {.cast(raises: []).}:
-                       let val = some(request.failed(code, e.msg).toJson())
-                     return val
-    # If it doesn't have an ID, it doesn't get a response
-    if request.id.isNone():
-      return none(JsonNode)
+  return ConstructedCall[R](
+    name: meth,
+    fun: proc (): Option[R] {.raises: [].}=
+      let response = try: fun(exec.inProgress, request)
+                    except Exception as e:
+                      let code = if e of RPCError: (ref RPCError)(e).code
+                                  else: ServerError
+                      {.cast(raises: []).}:
+                        logging.error(fmt"Failed to execute {meth} with exception {e.name}: {e.msg}")
+                        let val = some(request.failed(code, e.msg).toJson())
+                      return val
+      # If it doesn't have an ID, it doesn't get a response
+      if request.id.isNone():
+        return none(JsonNode)
 
-    # Form a response object
-    {.cast(raises: []).}:
-      return some(request.passed(response).toJson())
-
+      # Form a response object
+      {.cast(raises: []).}:
+        return some(request.passed(response).toJson())
+  )
 func initCalls[R](calls: seq[ConstructedCall[R]], isBatch = calls.len > 0): RPCCalls[R] =
   return RPCCalls[R](
     isBatch: isBatch,
@@ -646,6 +670,7 @@ proc getCalls*[R](exec: Executor[R], json: string): RPCCalls[R] =
       # Either way, we just represent it as a batch call
       json.parseJson()
     except JsonParsingError:
+      logging.error("Invalid JSON recieved")
       return initCalls(@[Request(id: none(JsonNode)).constructFail[:R](ParseError, "Failed to parse JSON")], false)
 
   if data.kind notin {JObject, JArray}:
