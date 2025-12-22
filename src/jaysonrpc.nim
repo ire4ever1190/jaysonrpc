@@ -13,7 +13,8 @@ import std/[
   sets,
   macrocache,
   sequtils,
-  logging
+  logging,
+  atomics
 ]
 
 import pkg/threading/rwlock
@@ -75,6 +76,7 @@ type
       ## Table of request ID to whether they have been cancelled or not.
       ## i.e. if the value is false, then the request has been cancelled by the server.
       ## It is the request handlers just to check this on a regular basis.
+    isRunning: Atomic[bool]
 
   Executor*[R] = object
     ## Executor stores all the functions, this can then be queried later
@@ -268,6 +270,10 @@ func isCancelled(this: InProgressRequests, id: JsonNode): bool =
   readWith this.lock:
     return id notin this.running
 
+func isRunning(this: Executor): bool =
+  ## Returns true if the server is considered to still be running
+  return this.inProgressRequests.isRunning.load()
+
 func cancel(this: InProgressRequests, ids: HashSet[JsonNode]) =
   ## Cancels a series of requests
   writeWith this.lock:
@@ -299,6 +305,7 @@ func cancel*(ctx: Context, id: JsonNode) =
 
 func shutdown*(exec: Executor) =
   ## Shutdowns the executor by cancelling all in progress requests
+  exec.inProgress.isRunning.store(false)
   writeWith exec.inProgress.lock:
     exec.inProgress.running.clear()
 
@@ -665,6 +672,7 @@ func len*(calls: RPCCalls): int =
 proc getCalls*[R](exec: Executor[R], json: string): RPCCalls[R] =
   ## Returns all the calls stored in a JSON message.
   ## Once all have been ran, they should be sent back to [dump]
+
   let data = try:
       # It could be a batch call or just a single call.
       # Either way, we just represent it as a batch call
@@ -686,6 +694,13 @@ proc getCalls*[R](exec: Executor[R], json: string): RPCCalls[R] =
   for data in allData:
     try:
       let request = data.jsonTo(Request)
+
+      if not exec.isRunning:
+        # If we are shutdown, just return an error . We wait til here for the error so we can get an ID
+        if request.id.isSome():
+          result.calls &= request.constructFail[:R](InvalidRequest, "Server is shutdown and not handling requests")
+        continue
+
       # If its not a notification then register it so it can be cancelled
       if request.id.isSome():
         exec.inProgress.add(request.id.unsafeGet())
