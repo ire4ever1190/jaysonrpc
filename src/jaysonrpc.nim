@@ -271,7 +271,7 @@ func isCancelled(this: InProgressRequests, id: JsonNode): bool =
   readWith this.lock:
     return id notin this.running
 
-func isRunning(this: Executor): bool =
+func isRunning*(this: Executor): bool =
   ## Returns true if the server is considered to still be running
   return this.inProgress.isRunning.load()
 
