@@ -313,6 +313,10 @@ func inProgress*(exec: Executor): int =
   readWith exec.inProgress.lock:
     return exec.inProgress.running.len
 
+func id*(ctx: Context): Option[JsonNode] =
+  ## Returns ID for current request
+  return ctx.id
+
 func fromJsonHook*(request: out Request, data: JsonNode) =
   ## Hook for parsing the JSON
   # Perform some validation
