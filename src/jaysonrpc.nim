@@ -24,7 +24,7 @@ import pkg/threading/rwlock
 runnableExamples:
   import std/sugar # for collect:
 
-  var rpc = initExecutor[JsonNode]()
+  var rpc = initExecutor[JsonNode, void]()
 
   rpc.on("hello") do (x: string) -> string:
     return x
