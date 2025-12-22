@@ -6,7 +6,7 @@ import std/[unittest, json, strformat, macros, sugar, options]
 import jaysonrpc
 import ./utils
 
-var rpc = initExecutor[JsonNode]()
+var rpc = initExecutor[JsonNode, void]()
 
 rpc.on("subtract") do (minuend, subtrahend: int) -> int:
   return minuend - subtrahend
