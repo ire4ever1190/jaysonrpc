@@ -55,10 +55,12 @@ type
     ## Represents a return value from a call. Optional is used to represent if a response
     ## actually needs to be sent. preprocessed into JSON to avoid and hook issues
 
-  RPCFunction[R] = proc (inProgress: InProgressRequests, request: Request): R
+  RPCFunction[R, C] = proc (inProgress: InProgressRequests, request: Request, ctx: C): R
     ## Function that takes in request parameters and returns `R`.
     ## `R` should be some form of a string, e.g. `Future[string]`, `string`.
     ## This is to enable using different execution schemes
+    ##
+    ## `C` is the context parameter, this allows extra info to be passed along to every request
 
   ConstructedCallProc[R] = proc (): Option[R] {.closure, raises: [].}
   ConstructedCall*[R] = object
@@ -78,18 +80,13 @@ type
       ## It is the request handlers just to check this on a regular basis.
     isRunning: Atomic[bool]
 
-  Executor*[R] = object
+  Executor*[R, C] = object
     ## Executor stores all the functions, this can then be queried later
     ## to get the function to then pass to your favourite executor
     # TODO: Add generic parameter for context
     # Return type is generic to allow for async/sync executors
-    handlers: CritBitTree[RPCFunction[R]]
+    handlers: CritBitTree[RPCFunction[R, C]]
     inProgress: InProgressRequests
-
-  SyncExecutor = Executor[ReturnVal]
-    ## Synchronous RPC call executor. Not exactly useful, but I use it for tests
-
-  AsyncExecutor = Executor[Future[ReturnVal]]
 
   MethodDef*[A: tuple, R] = object
     ## This is a definition of a method. Used to enforce a spec
@@ -179,13 +176,14 @@ type
       ## Whether the request was batch. Needed to control
       ## how we form the response
 
-  Context* = object
+  Context*[C] = object
     inProgress {.cursor.}: InProgressRequests
       ## Pointer to the executor to get cancellation info
     id: Option[JsonNode]
       ## ID of the current request getting executed.
       ## If its a notification it will be None
-
+    data*: C
+      ## Optional metadata attached to the request by the server
 const
   InvalidRequest* = RPCErrorCode(-32600)
     ## Request object was invalid
@@ -203,8 +201,8 @@ func initInProgress(): InProgressRequests =
   result = InProgressRequests(lock: createRwLock())
   result.isRunning.store(true)
 
-func initExecutor*[R](): Executor[R] =
-  return Executor[R](inProgress: initInProgress())
+func initExecutor*[R, C](): Executor[R, C] =
+  return Executor[R, C](inProgress: initInProgress())
 
 proc findParmeters(x: NimNode): NimNode =
   ## Finds the parameters node
@@ -565,14 +563,14 @@ proc parseArgs(params: SentParameters, args: var tuple) =
     namedParams(params.namedParams, args, @["test"])
   of Void: discard
 
-macro wrapRPC(handler: proc, into: typedesc): RPCFunction =
+macro wrapRPC(handler: proc, into: typedesc, ctx: typedesc): RPCFunction =
   ## Wraps a proc so that it matches `into`. Performs the conversion
   ## of the passed JSON into whats expected for the handler
   let tupleVal = handler.createNamedTuple()
   return quote do:
-    proc (inProgress: InProgressRequests, request: Request): `into` =
+    proc (inProgress: InProgressRequests, request: Request, context: `ctx`): `into` =
       # Create the context
-      let ctx = Context(inProgress: inProgress, id: request.id)
+      let ctx = Context[`ctx`](inProgress: inProgress, id: request.id, data: context)
 
       # Convert the params
       var args = `tupleVal`
@@ -601,9 +599,9 @@ macro wrapRPC(handler: proc, into: typedesc): RPCFunction =
         if request.id.isSome():
           ctx.cancel(request.id.unsafeGet())
 
-proc on*[R](exec: var Executor[R], meth: string, handler: proc) =
+proc on*[R, C](exec: var Executor[R, C], meth: string, handler: proc) =
   ## Adds a method into the executor. Overwrites a method if it already exists
-  exec.handlers[meth] = wrapRPC(handler, R)
+  exec.handlers[meth] = wrapRPC(handler, R, C)
 
 func name*(call: ConstructedCall): string =
   ## Returns the method that a constructed call handles
@@ -629,7 +627,7 @@ proc constructFail[R](req: Request, code: RPCErrorCode, msg: string): Constructe
     fun: fun
   )
 
-proc `[]`[R](exec: Executor[R], request: sink Request): ConstructedCall[R] =
+proc get[R, C](exec: Executor[R, C], request: sink Request, context: sink C): ConstructedCall[R] =
   ## Gets the handler from the executor in a way that keeps reference to the request
   let meth = request.meth
   if meth notin exec.handlers:
@@ -639,8 +637,8 @@ proc `[]`[R](exec: Executor[R], request: sink Request): ConstructedCall[R] =
   let fun = exec.handlers[meth]
   return ConstructedCall[R](
     name: meth,
-    fun: proc (): Option[R] {.raises: [].}=
-      let response = try: fun(exec.inProgress, request)
+    fun: proc (): Option[R] {.raises: [].} =
+      let response = try: fun(exec.inProgress, request, context)
                     except Exception as e:
                       let code = if e of RPCError: (ref RPCError)(e).code
                                   else: ServerError
@@ -656,6 +654,11 @@ proc `[]`[R](exec: Executor[R], request: sink Request): ConstructedCall[R] =
       {.cast(raises: []).}:
         return some(request.passed(response).toJson())
   )
+
+proc `[]`[R](exec: Executor[R, void], request: sink Request): ConstructedCall[R] =
+  ## Gets the handler from the executor in a way that keeps reference to the request
+  exec.get(request)
+
 func initCalls[R](calls: seq[ConstructedCall[R]], isBatch = calls.len > 0): RPCCalls[R] =
   return RPCCalls[R](
     isBatch: isBatch,
@@ -670,7 +673,7 @@ func len*(calls: RPCCalls): int =
   ## Number of calls stored
   calls.calls.len
 
-proc getCalls*[R](exec: Executor[R], json: string): RPCCalls[R] =
+proc getCalls*[R, C](exec: Executor[R, C], json: string, ctx: C): RPCCalls[R] =
   ## Returns all the calls stored in a JSON message.
   ## Once all have been ran, they should be sent back to [dump]
 
@@ -706,7 +709,7 @@ proc getCalls*[R](exec: Executor[R], json: string): RPCCalls[R] =
       if request.id.isSome():
         exec.inProgress.add(request.id.unsafeGet())
 
-      result.calls &= exec[request]
+      result.calls &= exec.get(request, ctx)
     except RPCError as e:
       result.calls &= Request(id: none(JsonNode)).constructFail[:R](e.code, e.msg)
 
