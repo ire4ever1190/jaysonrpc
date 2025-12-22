@@ -1,4 +1,6 @@
-import std/[json]
+import std/[json, sugar, jsonutils, json]
+
+import jaysonrpc
 
 proc checkJSON*(a, b: JsonNode): bool =
   ## Checks if two JSON objects are the same.
@@ -25,6 +27,15 @@ proc strOrNil*(x: JsonNode): string =
 
 proc parseOrNil*(x: string): JsonNode =
   if x == "": nil else: x.parseJson()
+
+proc notify*[R, C](rpc: Executor[R, C], ctx: C, meth: MethodDef) =
+  ## Sends notification
+  let calls = rpc.getCalls($ meth.notify(()).toJson(), ctx)
+  let responses = collect:
+    for call in calls:
+      call()
+
+  discard calls.dump(responses)
 
 template testCase*(name: string, body: untyped) {.dirty.} =
   ## Creates a test case.

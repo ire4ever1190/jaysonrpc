@@ -4,13 +4,13 @@ import jaysonrpc
 
 # TODO: Update the tests when I have some form on concurrency
 
-var rpc = initExecutor[JsonNode]()
+var rpc = initExecutor[JsonNode, void]()
 
-rpc.on("cancel") do (id: int, ctx: Context):
+rpc.on("cancel") do (id: int, ctx: Context[void]):
   ## Cancels a request
   ctx.cancel(%id)
 
-rpc.on("someFunc") do (ctx: Context) -> bool:
+rpc.on("someFunc") do (ctx: Context[void]) -> bool:
   ## Returns if a request has been cancelled or not
   return ctx.isCancelled()
 
