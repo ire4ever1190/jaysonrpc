@@ -563,14 +563,20 @@ proc parseArgs(params: SentParameters, args: var tuple) =
     namedParams(params.namedParams, args, @["test"])
   of Void: discard
 
+func initContext[C](inProgress: sink InProgressRequests, id: Option[JsonNode], context: C): Context[C] =
+  return Context[C](inProgress: inProgress, id: id, data: context)
+
+func initContext(inProgress: sink InProgressRequests, id: Option[JsonNode]): Context[void] =
+  return Context[void](inProgress: inProgress, id: id)
+
 macro wrapRPC(handler: proc, into: typedesc, ctx: typedesc): RPCFunction =
   ## Wraps a proc so that it matches `into`. Performs the conversion
   ## of the passed JSON into whats expected for the handler
   let tupleVal = handler.createNamedTuple()
   return quote do:
-    proc (inProgress: InProgressRequests, request: Request, context: `ctx`): `into` =
+    RPCFunction[`into`, `ctx`](proc (inProgress: InProgressRequests, request: Request, context: `ctx`): `into` =
       # Create the context
-      let ctx = Context[`ctx`](inProgress: inProgress, id: request.id, data: context)
+      let ctx = when `ctx` is void: initContext(inProgress, request.id) else: initContext(inProgress, request.id, context)
 
       # Convert the params
       var args = `tupleVal`
@@ -598,7 +604,7 @@ macro wrapRPC(handler: proc, into: typedesc, ctx: typedesc): RPCFunction =
         # Make sure to deregister the call
         if request.id.isSome():
           ctx.cancel(request.id.unsafeGet())
-
+    )
 proc on*[R, C](exec: var Executor[R, C], meth: string, handler: proc) =
   ## Adds a method into the executor. Overwrites a method if it already exists
   exec.handlers[meth] = wrapRPC(handler, R, C)
@@ -627,7 +633,7 @@ proc constructFail[R](req: Request, code: RPCErrorCode, msg: string): Constructe
     fun: fun
   )
 
-proc get[R, C](exec: Executor[R, C], request: sink Request, context: sink C): ConstructedCall[R] =
+proc get[R, C](exec: Executor[R, C], request: sink Request, context: (sink C) | typedesc[void]): ConstructedCall[R] =
   ## Gets the handler from the executor in a way that keeps reference to the request
   let meth = request.meth
   if meth notin exec.handlers:
@@ -638,7 +644,10 @@ proc get[R, C](exec: Executor[R, C], request: sink Request, context: sink C): Co
   return ConstructedCall[R](
     name: meth,
     fun: proc (): Option[R] {.raises: [].} =
-      let response = try: fun(exec.inProgress, request, context)
+      let response =
+                    try:
+                      when C is void: fun(exec.inProgress, request)
+                      else: fun(exec.inProgress, request, context)
                     except Exception as e:
                       let code = if e of RPCError: (ref RPCError)(e).code
                                   else: ServerError
@@ -673,7 +682,7 @@ func len*(calls: RPCCalls): int =
   ## Number of calls stored
   calls.calls.len
 
-proc getCalls*[R, C](exec: Executor[R, C], json: string, ctx: C): RPCCalls[R] =
+proc getCalls*[R, C](exec: Executor[R, C], json: string, ctx: C | typedesc[void]): RPCCalls[R] =
   ## Returns all the calls stored in a JSON message.
   ## Once all have been ran, they should be sent back to [dump]
 
@@ -713,6 +722,8 @@ proc getCalls*[R, C](exec: Executor[R, C], json: string, ctx: C): RPCCalls[R] =
     except RPCError as e:
       result.calls &= Request(id: none(JsonNode)).constructFail[:R](e.code, e.msg)
 
+proc getCalls*[R](exec: Executor[R, void], json: string): RPCCalls[R] =
+  exec.getCalls(json, void)
 
 export critbits
 export json
