@@ -200,7 +200,8 @@ const
 
 func initInProgress(): InProgressRequests =
   ## Creates a new in progress object
-  return InProgressRequests(lock: createRwLock())
+  result = InProgressRequests(lock: createRwLock())
+  result.isRunning.store(true)
 
 func initExecutor*[R](): Executor[R] =
   return Executor[R](inProgress: initInProgress())
@@ -272,7 +273,7 @@ func isCancelled(this: InProgressRequests, id: JsonNode): bool =
 
 func isRunning(this: Executor): bool =
   ## Returns true if the server is considered to still be running
-  return this.inProgressRequests.isRunning.load()
+  return this.inProgress.isRunning.load()
 
 func cancel(this: InProgressRequests, ids: HashSet[JsonNode]) =
   ## Cancels a series of requests
