@@ -300,7 +300,7 @@ func cancel*(ctx: Context, id: JsonNode) =
 func shutdown*(exec: Executor) =
   ## Shutdowns the executor by cancelling all in progress requests
   writeWith exec.inProgress.lock:
-    exec.inProgress.clear()
+    exec.inProgress.running.clear()
 
 func inProgress*(exec: Executor): int =
   ## Returns the number of requests that are registered to be executed

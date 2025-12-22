@@ -49,3 +49,11 @@ testCase "Check function is registered in the inProgress asap":
 
   resp = calls.dump(responses)
   check resp.get().parseJson()["result"].bval
+
+testCase "Shutdown stops all processes":
+  testCase "Check function is registered in the inProgress asap":
+    for i in 0..10:
+      discard rpc.getCalls($ %* {"jsonrpc": "2.0", "method": "someFunc", "id": 1})
+    check rpc.inProgress() > 0
+    rpc.shutdown()
+    check rpc.inProgress() == 0
