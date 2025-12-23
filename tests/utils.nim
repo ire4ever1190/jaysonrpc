@@ -28,14 +28,28 @@ proc strOrNil*(x: JsonNode): string =
 proc parseOrNil*(x: string): JsonNode =
   if x == "": nil else: x.parseJson()
 
-proc notify*[R, C](rpc: Executor[R, C], ctx: C, meth: MethodDef) =
+proc notify*[R, C, A, T](rpc: Executor[R, C], ctx: C, meth: MethodDef[A, T], args: A) =
   ## Sends notification
-  let calls = rpc.getCalls($ meth.notify(()).toJson(), ctx)
+  let calls = rpc.getCalls($ meth.notify(args).toJson(), ctx)
   let responses = collect:
     for call in calls:
       call()
 
   discard calls.dump(responses)
+
+var id = 0
+proc rawCall*[R, C, A, T](rpc: Executor[R, C], ctx: C, meth: MethodDef[A, T], args: A): Response =
+  ## Performs a call and returns the value
+  var call = meth.call(args)
+  call.id = id
+  inc id
+
+  let calls = rpc.getCalls($ meth.notify(args).toJson(), ctx)
+  let responses = collect:
+    for call in calls:
+      call()
+  echo calls.dump(responses).get()
+  result.fromJson(calls.dump(responses).get().parseJson())
 
 template testCase*(name: string, body: untyped) {.dirty.} =
   ## Creates a test case.
