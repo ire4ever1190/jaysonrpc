@@ -483,6 +483,8 @@ template argumentKeys(args: tuple): HashSet[string] =
       keys.incl(name)
   keys
 
+const jsonOpts = JOptions(allowMissingKeys: true)
+
 proc positionalParams(data: openArray[JsonNode], args: var tuple) =
   ## Parses positional params from the object
 
@@ -494,7 +496,7 @@ proc positionalParams(data: openArray[JsonNode], args: var tuple) =
   var i = 0
   for field in args.fields:
     when type(field) is not Context: # We must skip the context param
-      field.fromJson(data[i])
+      field.fromJson(data[i], jsonOpts)
       i += 1
 
 proc namedParams(data: OrderedTable[string, JsonNode], args: var tuple) =
@@ -515,7 +517,7 @@ proc namedParams(data: OrderedTable[string, JsonNode], args: var tuple) =
           const fieldName = name
           raise (ref RPCError)(code: InvalidParams, msg: fmt"Missing expected argument: '{fieldName}'")
       else:
-        field.fromJson(data[name])
+        field.fromJson(data[name], jsonOpts)
 
 macro call*(prc: proc, args: tuple): untyped =
   ## Calls a proc using arguments from `tuple`
