@@ -500,9 +500,10 @@ proc namedParams(data: OrderedTable[string, JsonNode], args: var tuple, allowedM
   # Check every key in the passed object to ensure there aren't extra keys
   const allowedKeys =  args.argumentKeys()
 
-  for key in data.keys:
-    if key notin allowedKeys:
-      raise (ref RPCError)(code: InvalidParams, msg: fmt"Unknown argument: '{key}'")
+  when not defined(jaysonrpc.allowExtraArguments):
+    for key in data.keys:
+      if key notin allowedKeys:
+        raise (ref RPCError)(code: InvalidParams, msg: fmt"Unknown argument: '{key}'")
 
   for name, field in args.fieldPairs:
     when type(field) is not Context: # We must skip the context param
