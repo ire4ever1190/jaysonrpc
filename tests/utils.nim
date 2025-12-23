@@ -48,8 +48,10 @@ proc rawCall*[R, C, A, T](rpc: Executor[R, C], ctx: C, meth: MethodDef[A, T], ar
   let responses = collect:
     for call in calls:
       call()
-  echo calls.dump(responses).get()
-  result.fromJson(calls.dump(responses).get().parseJson())
+
+  let resp = calls.dump(responses)
+  if resp.isSome():
+    result.fromJson(resp.get().parseJson())
 
 template testCase*(name: string, body: untyped) {.dirty.} =
   ## Creates a test case.

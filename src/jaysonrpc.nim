@@ -510,11 +510,12 @@ proc namedParams(data: OrderedTable[string, JsonNode], args: var tuple) =
   for name, field in args.fieldPairs:
     when type(field) isnot Context: # We must skip the context param
       const optional = type(field) is Option
-      if name notin data and not optional:
-        const fieldName = name
-        raise (ref RPCError)(code: InvalidParams, msg: fmt"Missing expected argument: '{fieldName}'")
-
-      field.fromJson(data[name])
+      if name notin data:
+        when not optional:
+          const fieldName = name
+          raise (ref RPCError)(code: InvalidParams, msg: fmt"Missing expected argument: '{fieldName}'")
+      else:
+        field.fromJson(data[name])
 
 macro call*(prc: proc, args: tuple): untyped =
   ## Calls a proc using arguments from `tuple`
