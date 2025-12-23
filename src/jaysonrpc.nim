@@ -364,6 +364,8 @@ func fromJsonHook*(response: out Response, data: JsonNode) =
   if response.passed:
     response.result = data["result"]
   else:
+    if "data" notin data["error"]:
+      data["error"]["data"] = newJNull()
     response.error.fromJson(data["error"])
 
 func toJsonHook*(response: sink Response): JsonNode =
@@ -495,7 +497,7 @@ proc positionalParams(data: openArray[JsonNode], args: var tuple) =
       field.fromJson(data[i])
       i += 1
 
-proc namedParams(data: OrderedTable[string, JsonNode], args: var tuple, allowedMissing: static seq[string]) =
+proc namedParams(data: OrderedTable[string, JsonNode], args: var tuple) =
   ## Parses named params from the object
   # Check every key in the passed object to ensure there aren't extra keys
   const allowedKeys =  args.argumentKeys()
@@ -506,12 +508,14 @@ proc namedParams(data: OrderedTable[string, JsonNode], args: var tuple, allowedM
         raise (ref RPCError)(code: InvalidParams, msg: fmt"Unknown argument: '{key}'")
 
   for name, field in args.fieldPairs:
-    when type(field) is not Context: # We must skip the context param
-      if name notin data and name notin allowedMissing:
-        const fieldName = name
-        raise (ref RPCError)(code: InvalidParams, msg: fmt"Missing expected argument: '{fieldName}'")
-
-      field.fromJson(data[name])
+    when type(field) isnot Context: # We must skip the context param
+      const optional = type(field) is Option
+      if name notin data:
+        when not optional:
+          const fieldName = name
+          raise (ref RPCError)(code: InvalidParams, msg: fmt"Missing expected argument: '{fieldName}'")
+      else:
+        field.fromJson(data[name])
 
 macro call*(prc: proc, args: tuple): untyped =
   ## Calls a proc using arguments from `tuple`
@@ -553,6 +557,10 @@ proc call*[A, R](def: MethodDef[A, R], args: A): TypedRequest[R] {.inline.} =
     idx += 1
   return TypedRequest[R](formCall(def.name, argsArr))
 
+func `id=`*[R](request: var TypedRequest[R], id: int | string) =
+  ## Sets the ID for a request
+  Request(request).id = some %id
+
 proc notify*[A, R](def: MethodDef[A, R], args: A): Notification {.inline.} =
   ## Creates a notification call that can be sent
   Notification(Request(def.call(args)))
@@ -565,8 +573,14 @@ proc parseArgs(params: SentParameters, args: var tuple) =
   of Positional:
     positionalParams(params.positionalParams, args)
   of Named:
-    namedParams(params.namedParams, args, @["test"])
-  of Void: discard
+    namedParams(params.namedParams, args)
+  of Void:
+    # We still need to check we haven't missed args if any are required
+    for name, field in args.fieldPairs:
+      when type(field) isnot Context: # We must skip the context param
+        const optional = type(field) is Option
+        const fieldName = name
+        raise (ref RPCError)(code: InvalidParams, msg: fmt"Missing expected argument: '{fieldName}'")
 
 func initContext[C](inProgress: sink InProgressRequests, id: Option[JsonNode], context: C): Context[C] =
   return Context[C](inProgress: inProgress, id: id, data: context)
