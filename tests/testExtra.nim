@@ -38,5 +38,3 @@ suite "Return values":
   var
     rpc = initExecutor[JsonNode, string]()
   rpc.on("foo") do (ctx: Context[string], bar: int): discard
-
-  test "Can return null"
