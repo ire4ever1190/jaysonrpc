@@ -9,7 +9,7 @@ JSONRPC implementation that doesn't come with any transports (You bring it yours
 Just takes in JSON and sends back JSON, rest is up to you!.
 
 
-Go to the [docs here](https://ire4ever1190.github.io/jaysonrpc/jaysonrpc.html) for more information and examples
+Go to the [docs here](https://ire4ever1190.github.io/jaysonrpc/stable/jaysonrpc.html) for more information and examples
 
 ## Features
 

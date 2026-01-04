@@ -12,28 +12,28 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        nim: ['2.0.0', 'stable', 'devel']
+        nim: ["2.0.0", "stable", "devel"]
       fail-fast: false
       max-parallel: 3
 
     name: Nim ${{ matrix.nim }}
     steps:
-    - name: Setup Nim Enviroment
-      uses: actions/checkout@v4
+      - name: Setup Nim Enviroment
+        uses: actions/checkout@v4
 
-    - name: Setup Nim
-      uses: jiro4989/setup-nim-action@v2
-      with:
-        repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Update nimble
-      run: nimble update
+      - name: Update nimble
+        run: nimble update
 
-    - name: Run tests
-      run: nimble test
+      - name: Run tests
+        run: nimble test
 
-    - name: Test doc examples
-      run: nimble doc src/jaysonrpc.nim
+      - name: Test doc examples
+        run: nimble doc src/jaysonrpc.nim
 
   deploy:
     needs: test
@@ -49,7 +49,8 @@ jobs:
         uses: jiro4989/setup-nim-action@v1
 
       - name: "Build documentation"
-        uses: ire4ever1190/nim-docs-action@v1
+        uses: ire4ever1190/nim-docs-action@v2
         with:
           main-file: "src/jaysonrpc.nim"
           deploy: "pages"
+          versions: "stable HEAD"
