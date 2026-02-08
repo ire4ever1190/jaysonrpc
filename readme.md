@@ -1,4 +1,4 @@
-# JayonRPC
+# JaysonRPC
 
 > Best name I could come up with. I just needed a decent RPC for a few projects
 

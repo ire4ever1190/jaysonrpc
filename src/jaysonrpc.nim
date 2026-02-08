@@ -672,8 +672,9 @@ proc get[R, C](exec: Executor[R, C], request: sink Request, context: (sink C) | 
                     except Exception as e:
                       let code = if e of RPCError: (ref RPCError)(e).code
                                   else: ServerError
+                      let stackTrace = e.getStackTrace()
                       {.cast(raises: []).}:
-                        logging.error(fmt"Failed to execute {meth} with exception {e.name}: {e.msg}")
+                        logging.error(fmt"Failed to execute {meth} with exception {e.name}: {e.msg}\n{stackTrace}")
                         let val = some(request.failed(code, e.msg).toJson())
                       return val
       # If it doesn't have an ID, it doesn't get a response
