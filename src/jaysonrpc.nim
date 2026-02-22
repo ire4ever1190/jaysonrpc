@@ -47,7 +47,7 @@ runnableExamples:
 type
   IDKind = enum
     ## Different formats an ID can be
-    Numeric ## ID is s
+    Numeric ## ID is a number
     String
     None
 
@@ -584,10 +584,10 @@ proc parseArgs(params: SentParameters, args: var tuple) =
         const fieldName = name
         raise (ref RPCError)(code: InvalidParams, msg: fmt"Missing expected argument: '{fieldName}'")
 
-func initContext[C](inProgress: sink InProgressRequests, id: Option[JsonNode], context: C): Context[C] =
+func initContext[C](inProgress: InProgressRequests, id: Option[JsonNode], context: C): Context[C] =
   return Context[C](inProgress: inProgress, id: id, data: context)
 
-func initContext(inProgress: sink InProgressRequests, id: Option[JsonNode]): Context[void] =
+func initContext(inProgress: InProgressRequests, id: Option[JsonNode]): Context[void] =
   return Context[void](inProgress: inProgress, id: id)
 
 macro wrapRPC(handler: proc, into: typedesc, ctx: typedesc): RPCFunction =
@@ -658,7 +658,7 @@ proc get[R, C](exec: Executor[R, C], request: sink Request, context: (sink C) | 
   ## Gets the handler from the executor in a way that keeps reference to the request
   let meth = request.meth
   if meth notin exec.handlers:
-    logging.error(fmt"Unknown method '{meth}' call attemtped")
+    logging.error(fmt"Unknown method '{meth}' call attempted")
     return request.constructFail[:R](MethodNotFound, fmt"Method not found: '{meth}'")
 
   let fun = exec.handlers[meth]
@@ -742,7 +742,9 @@ proc getCalls*[R, C](exec: Executor[R, C], json: string, ctx: C | typedesc[void]
 
       result.calls &= exec.get(request, ctx)
     except RPCError as e:
-      result.calls &= Request(id: none(JsonNode)).constructFail[:R](e.code, e.msg)
+      # ID MUST be same as request. If we couldn't detect the ID (parse error, invalid request) then it MUST be null.
+      # Usually once the error gets here its either set (we parsed it) or missing (failed to parse it)
+      result.calls &= Request(id: e.id).constructFail[:R](e.code, e.msg)
 
 proc getCalls*[R](exec: Executor[R, void], json: string): RPCCalls[R] =
   exec.getCalls(json, void)
