@@ -73,7 +73,7 @@ testCase "RPC call with invalid JSON":
 
 testCase "RPC call with invalid request object":
   -> %* {"jsonrpc": "2.0", "method": 1, "params": "bar", "id": 1}
-  <- %* {"id": nil, "jsonrpc": "2.0", "error": {"code": -32600, "message": "Params must be an array/object of arguments"}}
+  <- %* {"id": 1, "jsonrpc": "2.0", "error": {"code": -32600, "message": "Params must be an array/object of arguments"}}
 
 testCase "RPC call batch, invalid JSON":
   -> """
@@ -141,3 +141,12 @@ testCase "Void returns null":
   -> %* {"jsonrpc": "2.0", "method": "void", "id": "1"}
   <- %* {"id": "1", "jsonrpc": "2.0", "result": nil}
   check oldVoidCalls + 1 == voidCalls
+
+suite "Error ID handling":
+  testCase "Invalid params error preserves request ID":
+    -> %* {"jsonrpc": "2.0", "method": "subtract", "params": {"minuend": 42}, "id": "test-123"}
+    <- %* {"id": "test-123", "jsonrpc": "2.0", "error": {"code": -32602, "message": "Missing expected argument: 'subtrahend'"}}
+
+  testCase "Missing jsonrpc field has null ID":
+    -> %* {"method": "foobar", "id": "should-be-null"}
+    <- %* {"id": nil, "jsonrpc": "2.0", "error": {"code": -32600, "message": "Missing jsonrpc"}}
