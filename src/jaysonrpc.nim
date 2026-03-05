@@ -702,6 +702,8 @@ iterator items*[R](calls: RPCCalls[R]): ConstructedCall[R] =
 
 func names*(calls: RPCCalls): HashSet[string] =
   ## Returns the names of RPC calls
+  for call in calls:
+    result.incl call.name
 
 func len*(calls: RPCCalls): int =
   ## Number of calls stored
