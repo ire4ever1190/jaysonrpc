@@ -1,5 +1,6 @@
 import std/[
-  unittest
+  unittest,
+  sets
 ]
 
 import jaysonrpc
@@ -38,3 +39,20 @@ suite "Return values":
   var
     rpc = initExecutor[JsonNode, string]()
   rpc.on("foo") do (ctx: Context[string], bar: int): discard
+
+suite "Names function":
+  test "Single call returns one name":
+    let rpc = initExecutor[JsonNode, void]()
+
+    let calls = rpc.getCalls("""{"jsonrpc": "2.0", "method": "singleMethod", "id": 1}""")
+    check calls.names() == toHashSet(["singleMethod"])
+
+  test "Batch call returns multiple names":
+    let rpc = initExecutor[JsonNode, void]()
+
+    let calls = rpc.getCalls("""[
+      {"jsonrpc": "2.0", "method": "method1", "id": 1},
+      {"jsonrpc": "2.0", "method": "method2", "id": 2},
+      {"jsonrpc": "2.0", "method": "method3", "id": 3}
+    ]""")
+    check calls.names() == toHashSet(["method1", "method2", "method3"])
