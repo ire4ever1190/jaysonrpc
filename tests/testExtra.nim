@@ -35,6 +35,16 @@ suite "Optional parameters":
     rpc.notify "test", MethodDef[tuple[foo: int], void](name: "foo"), (foo: 1)
     check val == "passed"
 
+test "Exceptions are caught":
+  var
+    rpc = initExecutor[JsonNode, string]()
+    val = ""
+  rpc.on("foo") do (ctx: Context[string]):
+    assert false
+
+  echo  rpc.rawCall("foo", MethodDef[(), void](name: "foo"), ())
+  check not rpc.rawCall("foo", MethodDef[(), void](name: "foo"), ()).passed
+
 suite "Return values":
   var
     rpc = initExecutor[JsonNode, string]()
