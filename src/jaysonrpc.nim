@@ -22,6 +22,8 @@ import pkg/casserole/results
 
 import pkg/threading/rwlock
 
+export casserole
+
 ## This is an implementation of the [JSON-RPC protocol](https://www.jsonrpc.org).
 
 runnableExamples:
@@ -99,16 +101,11 @@ type
     ##
     name*: string ## Name of the method getting called
 
-  ParamKind = enum
-    Void
-    Positional
-    Named
-
-  SentParameters = object
+  SentParameters {.cased.} = object
     ## Parameters stored in a request.
     ## Is either a list of positional parameters or a table of named parameters.
     ## Left up to the wrapped function to handle parsing
-    case kind: ParamKind
+    case
     of Void: discard
     of Positional:
       positionalParams: seq[JsonNode]
@@ -237,13 +234,11 @@ proc `$`*(code: RPCErrorCode): string {.borrow.}
 func `==`*(a, b: RPCErrorCode): bool {.borrow.}
 
 func fromJsonHook*(params: out SentParameters, data: JsonNode) =
-  case data.kind
-  of JArray:
-    params = SentParameters(kind: Positional, positionalParams: data.elems)
-  of JObject:
-    params = SentParameters(kind: Named, namedParams: data.fields)
-  else:
-    raise (ref ValueError)(msg: fmt"Params must be array or object, not {data.kind}")
+  params = case data
+           of JArray(elems): SentParameters.Positional(elems)
+           of JObject(fields): SentParameters.Named(fields)
+           else:
+             raise (ref ValueError)(msg: fmt"Params must be array or object, not {data.kind}")
 
 func checkedGet*[T](data: JsonNode, key: string, into: typedesc[T]): T =
   ## Performs a checked get to access `key` from `data` and converts into T
@@ -342,19 +337,19 @@ func fromJsonHook*(request: out Request, data: JsonNode) =
       jsonrpc: data.checkedGet("jsonrpc", string),
       id: id,
       meth: data.checkedGet("method", string),
-      params: params.map(x => x.jsonTo(SentParameters)).get(SentParameters(kind: Void))
+      params: params.map(x => x.jsonTo(SentParameters)).get(SentParameters.Void())
   )
 
 func toJsonHook*(parameters: SentParameters): JsonNode =
-  case parameters.kind
-  of Void:
+  case parameters
+  of Void():
     result = newJObject()
-  of Named:
+  of Named(params):
     result = newJObject()
-    result.fields = parameters.namedParams
-  of Positional:
+    result.fields = params
+  of Positional(items):
     result = newJArray()
-    result.elems = parameters.positionalParams
+    result.elems = items
 
 func toJsonHook*(id: sink ID): JsonNode =
   ## Converts an ID to JSON
@@ -370,8 +365,8 @@ func toJsonHook*(request: sink Request): JsonNode =
   }
   if request.params.kind != Void:
     result["params"] = request.params.toJson()
-  if request.id.isSome():
-    result["id"] = request.id.toJsonHook()
+  if Some(id) ?== request.id:
+    result["id"] = id.toJsonHook()
 
 func fromJsonHook*(response: out Response, data: JsonNode) =
   response = Response()
@@ -560,7 +555,7 @@ func formCall(name: string, args: openArray[(string, JsonNode)] = []): Request =
     var params = initOrderedTable[string, JsonNode](args.len)
     for (name, value) in args:
       params[name] = value
-    result.params = SentParameters(kind: Named, namedParams: params)
+    result.params = SentParameters.Named(params)
 
 
 proc call*[A, R](def: MethodDef[A, R], args: A): TypedRequest[R] {.inline.} =
@@ -583,13 +578,12 @@ proc notify*[A, R](def: MethodDef[A, R], args: A): Notification {.inline.} =
 proc parseArgs(params: SentParameters, args: var tuple) =
   ## Parses the arguments from `params` into `args`. Handles
   ## both positional and named args
-  bind positionalParams, namedParams
-  case params.kind
-  of Positional:
-    positionalParams(params.positionalParams, args)
-  of Named:
-    namedParams(params.namedParams, args)
-  of Void:
+  case params
+  of Positional(params):
+    positionalParams(params, args)
+  of Named(vals):
+    namedParams(vals, args)
+  of Void():
     # We still need to check we haven't missed args if any are required
     for name, field in args.fieldPairs:
       when type(field) isnot Context: # We must skip the context param
@@ -755,8 +749,8 @@ proc getCalls*[R, C](exec: Executor[R, C], json: string, ctx: C | typedesc[void]
         continue
 
       # If its not a notification then register it so it can be cancelled
-      if request.id.isSome():
-        exec.inProgress.add(request.id.unsafeGet())
+      if Some(id) ?== request.id:
+        exec.inProgress.add(id)
 
       result.calls &= exec.get(request, ctx)
     except RPCError as e:
