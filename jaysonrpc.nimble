@@ -11,4 +11,4 @@ srcDir        = "src"
 
 requires "nim >= 2.2.8"
 requires "threading#c5a39a0"
-requires "gh:ire4ever1190/casserole >= 0.2.12"
+requires "gh:ire4ever1190/casserole >= 0.3.0"

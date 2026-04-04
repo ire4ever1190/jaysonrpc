@@ -8,7 +8,7 @@ var rpc = initExecutor[JsonNode, void]()
 
 rpc.on("cancel") do (id: int, ctx: Context[void]):
   ## Cancels a request
-  ctx.cancel(%id)
+  ctx.cancel(ID.Numeric(id))
 
 rpc.on("someFunc") do (ctx: Context[void]) -> bool:
   ## Returns if a request has been cancelled or not

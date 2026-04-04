@@ -50,7 +50,7 @@ runnableExamples:
 # TODO: Some kind of context maybe?
 
 type
-  ID {.cased.} = tuple[
+  ID* {.cased.} = tuple[
     Numeric: int,
     String: string,
     Null: nil
@@ -569,7 +569,7 @@ proc call*[A, R](def: MethodDef[A, R], args: A): TypedRequest[R] {.inline.} =
 
 func `id=`*[R](request: var TypedRequest[R], id: int | string) =
   ## Sets the ID for a request
-  Request(request).id = (when id is int: ID.Numeric(id) else: ID.String(id))
+  Request(request).id = some (when id is int: ID.Numeric(id) else: ID.String(id))
 
 proc notify*[A, R](def: MethodDef[A, R], args: A): Notification {.inline.} =
   ## Creates a notification call that can be sent
