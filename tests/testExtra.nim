@@ -4,6 +4,7 @@ import std/[
 ]
 
 import jaysonrpc
+import casserole/results
 import ./utils
 
 suite "Context parameter":
@@ -23,7 +24,7 @@ suite "Optional parameters":
       rpc = initExecutor[JsonNode, string]()
     rpc.on("foo") do (ctx: Context[string], bar: int): discard
 
-    check not rpc.rawCall("test", MethodDef[(), void](name: "foo"), ()).passed
+    check Error(_) ?== rpc.rawCall("test", MethodDef[(), void](name: "foo"), ()).result
 
   test "Optional values are not required":
     var
@@ -34,6 +35,16 @@ suite "Optional parameters":
 
     rpc.notify "test", MethodDef[tuple[foo: int], void](name: "foo"), (foo: 1)
     check val == "passed"
+
+test "Exceptions are caught":
+  var
+    rpc = initExecutor[JsonNode, string]()
+    val = ""
+  rpc.on("foo") do (ctx: Context[string]):
+    assert false
+
+  echo  rpc.rawCall("foo", MethodDef[(), void](name: "foo"), ())
+  check Error(_) ?== rpc.rawCall("foo", MethodDef[(), void](name: "foo"), ()).result
 
 suite "Return values":
   var
