@@ -190,6 +190,10 @@ const
   ServerError* = RPCErrorCode(-32603)
     ## Error from internal handler
 
+template argName*(name: string) {.pragma.}
+  ## Use this to explicitly set the name of the argument that the client needs to send
+  ## e.g. you want the client to send an argument `_meta` but thats not a valid Nim identifier
+
 func initInProgress(): InProgressRequests =
   ## Creates a new in progress object
   result = InProgressRequests(lock: createRwLock())
