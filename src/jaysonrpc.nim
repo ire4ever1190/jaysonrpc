@@ -19,6 +19,7 @@ import std/[
 
 import pkg/casserole
 import pkg/casserole/results
+import pkg/libdump/macros
 
 import pkg/threading/rwlock
 
@@ -469,52 +470,60 @@ type Rename*[T; N: static string] = T
   ## Small helper to rename an argument (e.g. `N` is what you expect the client to pass).
   ## Expermental, should only be usd if `N` isn't a valid Nim identifier
 
-proc createNamedTuple(prc: NimNode): NimNode =
-  ## Takes in the NimNode for a proc type and returns a named tuple to
+proc createObject(prc: NimNode): NimNode =
+  ## Takes in the NimNode for a proc type and returns an object to
   ## parse the parameters.
   ## Tuple has default values
   let typ = prc.getTypeImpl()
   # First we need to construct the type
-  let tupleType = nnkTupleTy.newTree()
+
+  let params = nnkRecList.newTree()
 
   # Add all the args
-  for (name, param, _) in typ.procArgs():
-    if param.kind == nnkBracketExpr and param[0].eqIdent(bindSym"Rename"):
-      tupleType &= newIdentDefs(ident param[^1].strVal, param)
-    else:
-      tupleType &= newIdentDefs(ident name, param)
+  for (name, param, def) in typ.procArgs():
+    let paramName = if param.kind == nnkBracketExpr and param[0].eqIdent(bindSym"Rename"): param[^1].strVal
+                    else: name
+    params &= newIdentDefs(ident paramName, param, def)
 
-  # Then construct it
-  return newCall("default", tupleType)
+  result = newStmtList()
+  # Construct the object. Used over a tuple so its a nominal instead of structual type (caused issues with
+  # defaults getting erased if another tuple shared the same type)
+  let typeName = nskType.genSym("args")
+  result &= nnkTypeSection.newTree(nnkTypeDef.newTree(typeName, newEmptyNode(), nnkObjectTy.newTree(newEmptyNode(), newEmptyNode(), params)))
 
-  # Then assign the defaults (TODO)
+  # Default it so the defaults hang around
+  result &= newCall("default", typeName)
 
-template argumentKeys(args: tuple): HashSet[string] =
-  ## Returns the keys in the argument tuple that must be parsed.
+template argumentKeys(args: object, ignoreDefaults: bool = false): HashSet[string] =
+  ## Returns the keys in the argument object that must be parsed.
   ## This handles getting rid of the [Context] argument
   var keys = initHashSet[string]()
   for name, field in args.fieldPairs:
-    when type(field) is not Context:
+    when type(field) is not Context and not (ignoreDefaults and field.hasDefaultValue()):
       keys.incl(name)
   keys
 
+
 const jsonOpts = JOptions(allowMissingKeys: true)
 
-proc positionalParams(data: openArray[JsonNode], args: var tuple) =
+proc positionalParams(data: openArray[JsonNode], args: var object) =
   ## Parses positional params from the object
-
-  const tupleLen = args.argumentKeys().len
-  if data.len != tupleLen:
-    raise (ref RPCError)(code: InvalidParams, msg: fmt"Expected {tupleLen} parameters but got {data.len}")
+  const keysLen = args.argumentKeys(true).len
+  if data.len < keysLen:
+    raise (ref RPCError)(code: InvalidParams, msg: fmt"Expected {keysLen} parameters but got {data.len}")
 
   # Parse each field
   var i = 0
   for field in args.fields:
+    # We've gone past whats provided. Defaults are provided so we can skip
+    if i >= data.len:
+      return
+
     when type(field) is not Context: # We must skip the context param
       field.fromJson(data[i], jsonOpts)
       i += 1
 
-proc namedParams(data: OrderedTable[string, JsonNode], args: var tuple) =
+proc namedParams(data: OrderedTable[string, JsonNode], args: var object) =
   ## Parses named params from the object
   # Check every key in the passed object to ensure there aren't extra keys
   const allowedKeys =  args.argumentKeys()
@@ -526,7 +535,7 @@ proc namedParams(data: OrderedTable[string, JsonNode], args: var tuple) =
 
   for name, field in args.fieldPairs:
     when type(field) isnot Context: # We must skip the context param
-      const optional = type(field) is Option
+      const optional = type(field) is Option or field.hasDefaultValue()
       if name notin data:
         when not optional:
           const fieldName = name
@@ -534,16 +543,17 @@ proc namedParams(data: OrderedTable[string, JsonNode], args: var tuple) =
       else:
         field.fromJson(data[name], jsonOpts)
 
-macro call*(prc: proc, args: tuple): untyped =
+macro call*(prc: proc, args: object | tuple): untyped =
   ## Calls a proc using arguments from `tuple`
   runnableExamples:
     proc foo(a, b: int): int = a + b
 
     assert foo.call((a: 1, b: 2)) == 3
   result = newCall(prc)
-  for arg in args.getTypeImpl():
-    if arg.kind != nnkIdentDefs:
-      "Tuple must be made of named arguments".error(arg)
+  let impl = args.getTypeImpl()
+  let params = if impl.kind == nnkObjectTy: impl[2] else: impl
+
+  for arg in params:
     result &= nnkDotExpr.newTree(args, ident arg[0].strVal)
 
 func formCall(name: string, args: openArray[(string, JsonNode)] = []): Request =
@@ -582,7 +592,7 @@ proc notify*[A, R](def: MethodDef[A, R], args: A): Notification {.inline.} =
   ## Creates a notification call that can be sent
   Notification(Request(def.call(args)))
 
-proc parseArgs(params: SentParameters, args: var tuple) =
+proc parseArgs(params: SentParameters, args: var object) =
   ## Parses the arguments from `params` into `args`. Handles
   ## both positional and named args
   case params
@@ -592,11 +602,8 @@ proc parseArgs(params: SentParameters, args: var tuple) =
     namedParams(vals, args)
   of Void():
     # We still need to check we haven't missed args if any are required
-    for name, field in args.fieldPairs:
-      when type(field) isnot Context: # We must skip the context param
-        const optional = type(field) is Option
-        const fieldName = name
-        raise (ref RPCError)(code: InvalidParams, msg: fmt"Missing expected argument: '{fieldName}'")
+    for name in args.argumentKeys(true).items():
+      raise (ref RPCError)(code: InvalidParams, msg: fmt"Missing expected argument: '{name}'")
 
 func initContext[C](inProgress: InProgressRequests, id: Option[ID], context: C): Context[C] =
   return Context[C](inProgress: inProgress, id: id, data: context)
@@ -607,7 +614,7 @@ func initContext(inProgress: InProgressRequests, id: Option[ID]): Context[void] 
 macro wrapRPC(handler: proc, into: typedesc, ctx: typedesc): RPCFunction =
   ## Wraps a proc so that it matches `into`. Performs the conversion
   ## of the passed JSON into whats expected for the handler
-  let tupleVal = handler.createNamedTuple()
+  let tupleVal = handler.createObject()
   return quote do:
     RPCFunction[`into`, `ctx`](proc (inProgress: InProgressRequests, request: Request, context: `ctx`): `into` =
       # Create the context
@@ -640,7 +647,7 @@ macro wrapRPC(handler: proc, into: typedesc, ctx: typedesc): RPCFunction =
         if request.id.isSome():
           ctx.cancel(request.id.unsafeGet())
     )
-proc on*[R, C](exec: var Executor[R, C], meth: string, handler: proc) =
+template on*[R, C](exec: var Executor[R, C], meth: string, handler: proc) =
   ## Adds a method into the executor. Overwrites a method if it already exists
   exec.handlers[meth] = wrapRPC(handler, R, C)
 
