@@ -34,7 +34,7 @@ rpc.on("newName") do (foo: Rename[string, "_foo"]) -> string:
 rpc.on("defaultsCollision") do (name, greeting: string) -> string:
   return greeting & " " & name
 
-rpc.on("defaults") do (name = "user"; greeting = "Hello") -> string:
+rpc.on("defaults") do (name = "user", greeting = "Hello") -> string:
   return greeting & " " & name
 
 var voidCalls = 0

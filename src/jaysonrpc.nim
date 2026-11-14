@@ -499,7 +499,7 @@ template argumentKeys(args: object, ignoreDefaults: bool = false): HashSet[strin
   ## This handles getting rid of the [Context] argument
   var keys = initHashSet[string]()
   for name, field in args.fieldPairs:
-    when type(field) is not Context and (not ignoreDefaults or field.hasDefaultValue()):
+    when type(field) is not Context and not (ignoreDefaults and field.hasDefaultValue()):
       keys.incl(name)
   keys
 
@@ -508,7 +508,6 @@ const jsonOpts = JOptions(allowMissingKeys: true)
 
 proc positionalParams(data: openArray[JsonNode], args: var object) =
   ## Parses positional params from the object
-
   const keysLen = args.argumentKeys(true).len
   if data.len < keysLen:
     raise (ref RPCError)(code: InvalidParams, msg: fmt"Expected {keysLen} parameters but got {data.len}")
@@ -603,10 +602,8 @@ proc parseArgs(params: SentParameters, args: var object) =
     namedParams(vals, args)
   of Void():
     # We still need to check we haven't missed args if any are required
-    for name, field in args.fieldPairs:
-      when type(field) isnot Context: # We must skip the context param
-        const fieldName = name
-        raise (ref RPCError)(code: InvalidParams, msg: fmt"Missing expected argument: '{fieldName}'")
+    for name in args.argumentKeys(true):
+      raise (ref RPCError)(code: InvalidParams, msg: fmt"Missing expected argument: '{name}'")
 
 func initContext[C](inProgress: InProgressRequests, id: Option[ID], context: C): Context[C] =
   return Context[C](inProgress: inProgress, id: id, data: context)
