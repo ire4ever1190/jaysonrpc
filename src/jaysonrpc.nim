@@ -544,7 +544,7 @@ proc namedParams(data: OrderedTable[string, JsonNode], args: var object) =
       else:
         field.fromJson(data[name], jsonOpts)
 
-macro call*(prc: proc, args: object): untyped =
+macro call*(prc: proc, args: object | tuple): untyped =
   ## Calls a proc using arguments from `tuple`
   runnableExamples:
     proc foo(a, b: int): int = a + b
@@ -552,8 +552,9 @@ macro call*(prc: proc, args: object): untyped =
     assert foo.call((a: 1, b: 2)) == 3
   result = newCall(prc)
   let impl = args.getTypeImpl()
+  let params = if impl.kind == nnkObjectTy: impl[2] else: impl
 
-  for arg in args.getTypeImpl()[2]:
+  for arg in params:
     result &= nnkDotExpr.newTree(args, ident arg[0].strVal)
 
 func formCall(name: string, args: openArray[(string, JsonNode)] = []): Request =
@@ -604,7 +605,6 @@ proc parseArgs(params: SentParameters, args: var object) =
     # We still need to check we haven't missed args if any are required
     for name, field in args.fieldPairs:
       when type(field) isnot Context: # We must skip the context param
-        const optional = type(field) is Option
         const fieldName = name
         raise (ref RPCError)(code: InvalidParams, msg: fmt"Missing expected argument: '{fieldName}'")
 

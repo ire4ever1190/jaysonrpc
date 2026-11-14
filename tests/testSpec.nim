@@ -34,7 +34,7 @@ rpc.on("newName") do (foo: Rename[string, "_foo"]) -> string:
 rpc.on("defaultsCollision") do (name, greeting: string) -> string:
   return greeting & " " & name
 
-rpc.on("defaults") do (name: string; greeting = "Hello") -> string:
+rpc.on("defaults") do (name = "user"; greeting = "Hello") -> string:
   return greeting & " " & name
 
 var voidCalls = 0
@@ -182,3 +182,7 @@ suite "Defaults":
   testCase "Positional parameters all provided":
     -> %* {"jsonrpc": "2.0", "method": "defaults", "params": ["Jake", "Goodbye"], "id": 2}
     <- %* {"id": 2, "jsonrpc": "2.0", "result": "Goodbye Jake"}
+
+  testCase "Void args":
+    -> %* {"jsonrpc": "2.0", "method": "defaults", "id": 2}
+    <- %* {"id": 2, "jsonrpc": "2.0", "result": "Hello user"}
