@@ -602,7 +602,7 @@ proc parseArgs(params: SentParameters, args: var object) =
     namedParams(vals, args)
   of Void():
     # We still need to check we haven't missed args if any are required
-    for name in args.argumentKeys(true):
+    for name in args.argumentKeys(true).items():
       raise (ref RPCError)(code: InvalidParams, msg: fmt"Missing expected argument: '{name}'")
 
 func initContext[C](inProgress: InProgressRequests, id: Option[ID], context: C): Context[C] =
