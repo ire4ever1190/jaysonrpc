@@ -19,6 +19,7 @@ import std/[
 
 import pkg/casserole
 import pkg/casserole/results
+import pkg/libdump/macros
 
 import pkg/threading/rwlock
 
@@ -493,12 +494,12 @@ proc createObject(prc: NimNode): NimNode =
   # Default it so the defaults hang around
   result &= newCall("default", typeName)
 
-template argumentKeys(args: object): HashSet[string] =
+template argumentKeys(args: object, ignoreDefaults: bool = false): HashSet[string] =
   ## Returns the keys in the argument object that must be parsed.
   ## This handles getting rid of the [Context] argument
   var keys = initHashSet[string]()
   for name, field in args.fieldPairs:
-    when type(field) is not Context:
+    when type(field) is not Context and (not ignoreDefaults or field.hasDefaultValue()):
       keys.incl(name)
   keys
 
@@ -508,13 +509,17 @@ const jsonOpts = JOptions(allowMissingKeys: true)
 proc positionalParams(data: openArray[JsonNode], args: var object) =
   ## Parses positional params from the object
 
-  const keysLen = args.argumentKeys().len
-  if data.len != keysLen:
+  const keysLen = args.argumentKeys(true).len
+  if data.len < keysLen:
     raise (ref RPCError)(code: InvalidParams, msg: fmt"Expected {keysLen} parameters but got {data.len}")
 
   # Parse each field
   var i = 0
   for field in args.fields:
+    # We've gone past whats provided. Defaults are provided so we can skip
+    if i >= data.len:
+      return
+
     when type(field) is not Context: # We must skip the context param
       field.fromJson(data[i], jsonOpts)
       i += 1
