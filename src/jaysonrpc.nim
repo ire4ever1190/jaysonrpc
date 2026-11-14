@@ -469,17 +469,24 @@ iterator procArgs(prc: NimNode): (string, NimNode, NimNode) =
   for i in 1 ..< params.len:
     yield (params[i][0].strVal, params[i][1], params[i][2])
 
+type Rename*[T; N: static string] = T
+  ## Small helper to rename an argument (e.g. `N` is what you expect the client to pass).
+  ## Expermental, should only be usd if `N` isn't a valid Nim identifier
+
 proc createNamedTuple(prc: NimNode): NimNode =
   ## Takes in the NimNode for a proc type and returns a named tuple to
   ## parse the parameters.
-  ## Tuple has default values set
+  ## Tuple has default values
   let typ = prc.getTypeImpl()
   # First we need to construct the type
   let tupleType = nnkTupleTy.newTree()
 
   # Add all the args
   for (name, param, _) in typ.procArgs():
-    tupleType &= newIdentDefs(ident name, param)
+    if param.kind == nnkBracketExpr and param[0].eqIdent(bindSym"Rename"):
+      tupleType &= newIdentDefs(ident param[^1].strVal, param)
+    else:
+      tupleType &= newIdentDefs(ident name, param)
 
   # Then construct it
   return newCall("default", tupleType)

@@ -2,7 +2,7 @@
 ## Only missing invalid JSON requests since we deal with parsed JSON so that is a transport layer problem
 ## https://www.jsonrpc.org/specification#examples
 
-import std/[unittest, json, strformat, macros, sugar, options]
+import std/[unittest, json, strformat, macros, sugar, options, sets]
 import jaysonrpc
 import ./utils
 
@@ -26,7 +26,7 @@ rpc.on("error") do ():
 rpc.on("failedSpecial") do ():
   raise (ref RPCError)(code: RPCErrorCode(-32000), msg: "Failed at something specific")
 
-rpc.on("newName") do (foo {.argName("_foo").}: string) -> string:
+rpc.on("newName") do (foo: Rename[string, "_foo"]) -> string:
   return foo
 
 var voidCalls = 0
@@ -155,5 +155,5 @@ suite "Error ID handling":
     <- %* {"id": nil, "jsonrpc": "2.0", "error": {"code": -32600, "message": "Missing jsonrpc"}}
 
 testCase "Renaming an arg":
-  -> %* {"jsonrpc": "2.0", "method": "subtract", "params": {"_foo": "bar"}, "id": 2}
+  -> %* {"jsonrpc": "2.0", "method": "newName", "params": {"_foo": "bar"}, "id": 2}
   <- %* {"id": 2, "jsonrpc": "2.0", "result": "bar"}
