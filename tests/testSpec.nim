@@ -29,6 +29,9 @@ rpc.on("failedSpecial") do ():
 rpc.on("newName") do (foo: Rename[string, "_foo"]) -> string:
   return foo
 
+rpc.on("defaults") do (name: string; greeting = "Hello") -> string:
+  return greeting & " " & name
+
 var voidCalls = 0
 rpc.on("void") do ():
   # Have some side effect to ensure we know this is getting called
@@ -157,3 +160,20 @@ suite "Error ID handling":
 testCase "Renaming an arg":
   -> %* {"jsonrpc": "2.0", "method": "newName", "params": {"_foo": "bar"}, "id": 2}
   <- %* {"id": 2, "jsonrpc": "2.0", "result": "bar"}
+
+suite "Defaults":
+  testCase "Named parameters":
+    -> %* {"jsonrpc": "2.0", "method": "defaults", "params": {"name": "Jake"}, "id": 2}
+    <- %* {"id": 2, "jsonrpc": "2.0", "result": "Hello Jake"}
+
+  testCase "Named parameters all provided":
+    -> %* {"jsonrpc": "2.0", "method": "defaults", "params": {"name": "Jake", "greeting": "Goodbye"}, "id": 2}
+    <- %* {"id": 2, "jsonrpc": "2.0", "result": "Goodbye Jake"}
+
+  testCase "Positional parameters":
+    -> %* {"jsonrpc": "2.0", "method": "defaults", "params": ["Jake"], "id": 2}
+    <- %* {"id": 2, "jsonrpc": "2.0", "result": "Hello Jake"}
+
+  testCase "Positional parameters all provided":
+    -> %* {"jsonrpc": "2.0", "method": "defaults", "params": ["Jake", "Goodbye"], "id": 2}
+    <- %* {"id": 2, "jsonrpc": "2.0", "result": "Goodbye Jake"}

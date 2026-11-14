@@ -26,6 +26,5 @@ suite "Forming calls":
   test "Named arg":
     checkCall close.notify((name: "foo")), %* {"jsonrpc": "2.0", "method": "close", "params": {"name": "foo"}}
 
-  when false: # Default args implemented in the future
-    test "Default args":
-      checkCall hasDefault.notify(), %* {"jsonrpc": "2.0", "method": "close", "params": {"arg": "hello"}}
+  test "Default args":
+    checkCall hasDefault.notify(), %* {"jsonrpc": "2.0", "method": "close", "params": {"arg": "hello"}}
