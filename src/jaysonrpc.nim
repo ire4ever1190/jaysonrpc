@@ -531,7 +531,7 @@ proc namedParams(data: OrderedTable[string, JsonNode], args: var object) =
 
   for name, field in args.fieldPairs:
     when type(field) isnot Context: # We must skip the context param
-      const optional = type(field) is Option
+      const optional = type(field) is Option or field.hasDefaultValue()
       if name notin data:
         when not optional:
           const fieldName = name
