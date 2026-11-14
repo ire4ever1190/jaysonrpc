@@ -29,6 +29,11 @@ rpc.on("failedSpecial") do ():
 rpc.on("newName") do (foo: Rename[string, "_foo"]) -> string:
   return foo
 
+# Add a collision on the same type to make sure we don't run into a
+# cachd instantiation issue
+rpc.on("defaultsCollision") do (name, greeting: string) -> string:
+  return greeting & " " & name
+
 rpc.on("defaults") do (name: string; greeting = "Hello") -> string:
   return greeting & " " & name
 
